@@ -1,0 +1,37 @@
+[
+{
+  "directory": "/home/mark/txtempus/build",
+  "command": "/usr/bin/c++  -I/home/mark/txtempus/include -I/home/mark/txtempus/include/rpi   -Wall -O3 -std=gnu++14 -o CMakeFiles/txtempus.dir/src/txtempus.cc.o -c /home/mark/txtempus/src/txtempus.cc",
+  "file": "/home/mark/txtempus/src/txtempus.cc"
+},
+{
+  "directory": "/home/mark/txtempus/build",
+  "command": "/usr/bin/c++  -I/home/mark/txtempus/include -I/home/mark/txtempus/include/rpi   -Wall -O3 -std=gnu++14 -o CMakeFiles/txtempus.dir/src/dcf77-source.cc.o -c /home/mark/txtempus/src/dcf77-source.cc",
+  "file": "/home/mark/txtempus/src/dcf77-source.cc"
+},
+{
+  "directory": "/home/mark/txtempus/build",
+  "command": "/usr/bin/c++  -I/home/mark/txtempus/include -I/home/mark/txtempus/include/rpi   -Wall -O3 -std=gnu++14 -o CMakeFiles/txtempus.dir/src/wwvb-source.cc.o -c /home/mark/txtempus/src/wwvb-source.cc",
+  "file": "/home/mark/txtempus/src/wwvb-source.cc"
+},
+{
+  "directory": "/home/mark/txtempus/build",
+  "command": "/usr/bin/c++  -I/home/mark/txtempus/include -I/home/mark/txtempus/include/rpi   -Wall -O3 -std=gnu++14 -o CMakeFiles/txtempus.dir/src/jjy-source.cc.o -c /home/mark/txtempus/src/jjy-source.cc",
+  "file": "/home/mark/txtempus/src/jjy-source.cc"
+},
+{
+  "directory": "/home/mark/txtempus/build",
+  "command": "/usr/bin/c++  -I/home/mark/txtempus/include -I/home/mark/txtempus/include/rpi   -Wall -O3 -std=gnu++14 -o CMakeFiles/txtempus.dir/src/msf-source.cc.o -c /home/mark/txtempus/src/msf-source.cc",
+  "file": "/home/mark/txtempus/src/msf-source.cc"
+},
+{
+  "directory": "/home/mark/txtempus/build",
+  "command": "/usr/bin/c++  -I/home/mark/txtempus/include -I/home/mark/txtempus/include/rpi   -Wall -O3 -std=gnu++14 -o CMakeFiles/txtempus.dir/src/hardware-control.cc.o -c /home/mark/txtempus/src/hardware-control.cc",
+  "file": "/home/mark/txtempus/src/hardware-control.cc"
+},
+{
+  "directory": "/home/mark/txtempus/build",
+  "command": "/usr/bin/c++  -I/home/mark/txtempus/include -I/home/mark/txtempus/include/rpi   -Wall -O3 -std=gnu++14 -o CMakeFiles/txtempus.dir/src/rpi-control.cc.o -c /home/mark/txtempus/src/rpi-control.cc",
+  "file": "/home/mark/txtempus/src/rpi-control.cc"
+}
+]

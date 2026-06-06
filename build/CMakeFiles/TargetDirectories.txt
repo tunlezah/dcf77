@@ -1,0 +1,7 @@
+/home/mark/txtempus/build/CMakeFiles/txtempus.dir
+/home/mark/txtempus/build/CMakeFiles/edit_cache.dir
+/home/mark/txtempus/build/CMakeFiles/rebuild_cache.dir
+/home/mark/txtempus/build/CMakeFiles/list_install_components.dir
+/home/mark/txtempus/build/CMakeFiles/install.dir
+/home/mark/txtempus/build/CMakeFiles/install/local.dir
+/home/mark/txtempus/build/CMakeFiles/install/strip.dir
