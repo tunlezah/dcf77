@@ -1,0 +1,17 @@
+[Unit]
+Description=txtempus on-demand time-signal transmit
+After=time-sync.target
+
+[Service]
+# Type=simple (not oneshot) so `systemctl is-active` truthfully reports
+# "transmitting now" and `systemctl stop` maps to a clean SIGTERM that the
+# binary already handles (InterruptHandler -> StopClock()).
+Type=simple
+User=root
+# Defaults from the shared config, optionally overridden per-run by the web UI
+# (txtempus-control.sh writes /run/txtempus/oneshot.env; later file wins).
+EnvironmentFile=/etc/txtempus.conf
+EnvironmentFile=-/run/txtempus/oneshot.env
+ExecStart=/usr/bin/txtempus -s ${STATION} -r ${RUN_DURATION} -z ${ZONE_OFFSET}
+StandardOutput=journal
+StandardError=journal

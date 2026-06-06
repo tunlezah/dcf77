@@ -138,8 +138,8 @@ watch/clock.
 ### Build
 ```
  sudo apt-get install git build-essential cmake -y
- git clone https://github.com/hzeller/txtempus.git
- cd txtempus
+ git clone https://github.com/tunlezah/dcf77.git
+ cd dcf77
  mkdir build && cd build
 ```
 
@@ -257,6 +257,36 @@ After building, you can install the binary in some standard location
  sudo make install
 ```
 
+#### Appliance deployment: config file, scheduler & web UI
+
+This fork adds an opinionated appliance setup under [`deploy/`](deploy/) and a
+tiny LAN web UI under [`web/`](web/). After `sudo make install`:
+
+```
+ sudo ./deploy/install.sh
+```
+
+This installs:
+
+- **`/etc/txtempus.conf`** — a single source of truth (station, run duration,
+  zone offset, nightly schedule, web bind/port/PIN). It is plain shell-sourceable
+  `KEY=VALUE`, read by both the scheduler and the web UI.
+- **systemd units** — `txtempus-scheduler.{service,timer}` (nightly runs, times
+  taken from `SCHEDULE_TIMES`), `txtempus-oneshot.service` (on-demand transmit),
+  and `txtempus-web.service` (the web UI).
+- **`txtempus-scheduler.sh`** — the nightly runner (NTP sync + CPU-temperature
+  monitoring), now config-driven (the old hard-coded path is gone).
+- **`txtempus-control.sh`** — the small privileged shim the web UI calls to
+  drive systemd.
+
+Then open `http://<your-pi>:8080/` to pick the **station / region**, transmit on
+demand, edit the schedule, and see live status (transmitting?, NTP sync, CPU
+temperature). The web UI targets a trusted LAN on a Pi Zero W: Python-stdlib
+only (no extra packages), ~0 % idle CPU, and it never transmits itself — it only
+writes the config and asks systemd to (re)start the binary, staying out of the
+real-time transmit window. See [`web.md`](web.md) for the full design and
+[`summary.md`](summary.md)/[`todo.md`](todo.md) for the project analysis.
+
 #### Watch holder
 Each set-up will be different. In my case, I need my DCF77 radio
 watch getting set over night. So I built this watch holder that presents the
@@ -269,10 +299,12 @@ stratum 1 NTP servers keeping it at atomic time within ±50ms.
 This particular watch only checks the radio twice a day at 2am and 3am, so
 there is a cron-job that runs `txtempus` around these times for a few minutes.
 
-#### Crontab
+#### Crontab (manual alternative)
 
-If you put the following line in your `/etc/crontab` txtempus will be started
-at 1:57 and 2:57 at night and runs for 10 minutes.
+The appliance deploy above (systemd timer driven by `SCHEDULE_TIMES` in
+`/etc/txtempus.conf`) is the recommended way to schedule runs. If you'd rather
+use plain cron, putting the following line in your `/etc/crontab` starts
+txtempus at 1:57 and 2:57 at night for 10 minutes.
 
 ```crontab
 57 1,2    * * *   root    /usr/bin/txtempus -s DCF77 -r 10

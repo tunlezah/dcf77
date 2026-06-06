@@ -1,0 +1,26 @@
+[Unit]
+Description=txtempus web admin UI (LAN)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Default: run as root for a simple LAN appliance (security relaxed per design).
+# To harden: create a 'txtempus' user, chown /etc/txtempus.conf to it, grant it
+# sudo NOPASSWD to /usr/local/bin/txtempus-control.sh, set User=txtempus, and
+# set TXTEMPUS_CONTROL="sudo /usr/local/bin/txtempus-control.sh" below.
+User=root
+EnvironmentFile=/etc/txtempus.conf
+Environment=TXTEMPUS_CONTROL=/usr/local/bin/txtempus-control.sh
+ExecStart=/usr/bin/python3 /usr/local/bin/txtempus-web.py
+Restart=on-failure
+RestartSec=3
+# Stay out of the real-time transmitter's way on the single-core Pi Zero W:
+# the SCHED_FIFO 99 transmit loop must always preempt this.
+Nice=10
+CPUSchedulingPolicy=idle
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
