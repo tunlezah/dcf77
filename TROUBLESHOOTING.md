@@ -10,6 +10,7 @@ so you can diagnose problems yourself on the Pi.
 > leftover entries from an old setup (see [§3](#3-actual-cron-only-if-you-used-it--to-find-leftovers)).
 
 ## Contents
+- [0. First check: is the binary actually installed?](#0-first-check-is-the-binary-actually-installed)
 - [1. Is it transmitting right now?](#1-is-it-transmitting-right-now)
 - [2. The schedule (the "cron" equivalent)](#2-the-schedule-the-cron-equivalent)
 - [3. Actual cron (only if you used it / to find leftovers)](#3-actual-cron-only-if-you-used-it--to-find-leftovers)
@@ -22,6 +23,39 @@ so you can diagnose problems yourself on the Pi.
 - [What gets installed where](#what-gets-installed-where)
 
 ---
+
+## 0. First check: is the binary actually installed?
+
+The most common failure is the transmitter binary not being present. Everything
+else (the schedule, the web UI, the control script) is installed by
+`deploy/install.sh`, but they all *exec* `/usr/bin/txtempus` — if it isn't there,
+the logs show:
+
+```
+error spawning txtempus: No such file or directory
+```
+
+Check it:
+
+```sh
+command -v txtempus            # should print /usr/bin/txtempus
+ls -l /usr/bin/txtempus        # should exist and be executable
+/usr/bin/txtempus -n -s DCF77  # dry-run; prints the ASCII modulation if it works
+```
+
+**If it's missing, build and install it (then the units work immediately):**
+
+```sh
+cd /path/to/dcf77
+cmake -S . -B build && cmake --build build
+sudo install -m 0755 build/txtempus /usr/bin/txtempus
+# …or just re-run the installer, which now builds/installs the binary for you:
+sudo ./deploy/install.sh
+```
+
+> The binary lives in `/usr/bin/` (from `make install` / the installer), while the
+> helper scripts and web UI live in `/usr/local/bin/`. That split is intentional —
+> see [What gets installed where](#what-gets-installed-where).
 
 ## 1. Is it transmitting right now?
 
@@ -114,6 +148,9 @@ curl -s http://localhost:8080/api/status | python3 -m json.tool   # the exact JS
 
 ## 8. Test a transmission yourself (bypassing the schedule)
 
+First confirm the binary is installed (see [§0](#0-first-check-is-the-binary-actually-installed)) —
+`command -v txtempus` should print `/usr/bin/txtempus`. Then:
+
 ```sh
 /usr/bin/txtempus -n -s DCF77             # dry-run: prints the ASCII modulation, no root, no RF
 sudo /usr/bin/txtempus -v -s DCF77 -r 1   # real 1-minute transmit with verbose output
@@ -129,6 +166,7 @@ sudo /usr/local/bin/txtempus-control.sh apply-schedule    # rebuild the timer fr
 ## Quickest "why isn't it working?" sequence
 
 ```sh
+command -v txtempus                                         # is the binary installed at all? (§0)
 systemctl list-timers txtempus-scheduler.timer              # will it run, and when?
 timedatectl                                                 # is the clock NTP-synced?
 cat /run/txtempus/last-run                                  # did the last run succeed?
