@@ -1,10 +1,15 @@
 # txtempus — radio time-station transmitter & Raspberry Pi appliance
 
-Bring a radio-controlled clock or watch back to life where it can't hear its
-time station. **txtempus** takes the (NTP-disciplined) system clock of a
-Raspberry Pi and generates a low-frequency, amplitude-modulated carrier on a
-GPIO pin. Magnetically coupled through a small wire loop held a few centimetres
-away, that signal sets [DCF77], [WWVB], [MSF], [JJY] and [BPC] clocks/watches.
+> Bring a radio-controlled clock or watch back to life where it can't hear its time station.
+
+[![build](https://github.com/tunlezah/dcf77/actions/workflows/build.yml/badge.svg)](https://github.com/tunlezah/dcf77/actions/workflows/build.yml)
+
+**txtempus** takes the (NTP-disciplined) system clock of a Raspberry Pi and
+generates a low-frequency, amplitude-modulated carrier on a GPIO pin.
+Magnetically coupled through a small wire loop held a few centimetres away, that
+signal sets [DCF77], [WWVB], [MSF], [JJY] and [BPC] clocks and watches — useful
+when a radio-controlled timepiece is out of range of its real transmitter (for
+example a European DCF77 watch used outside Europe).
 
 This fork packages the original command-line transmitter into a small,
 config-driven **appliance** for a Raspberry Pi Zero W on a home LAN:
@@ -12,8 +17,10 @@ config-driven **appliance** for a Raspberry Pi Zero W on a home LAN:
 - a single config file (`/etc/txtempus.conf`),
 - a `systemd` scheduler that broadcasts for a few minutes at night,
 - a tiny **web UI** to pick the station/region, transmit on demand, edit the
-  schedule, see what time/DST is being sent, and read a per-model **watch guide**,
-- an installer/uninstaller, encoder **tests**, and **CI** that cross-compiles for ARM.
+  schedule, watch a live transmit status, see the time/DST being sent, and read
+  a per-model **watch guide**,
+- an idempotent installer/uninstaller, encoder **tests**, and **CI** that
+  cross-compiles for ARM.
 
 > ⚠️ **Before you transmit, make sure you follow your local laws on radio
 > transmissions.** The coupling here is intentionally very weak (a few cm range)
@@ -25,7 +32,9 @@ transmitter and protocol work is his (see [Credits](#credits)).
 
 ---
 
-## Contents
+## Table of contents
+
+- [Features](#features)
 - [Supported time services](#supported-time-services)
 - [How it works](#how-it-works)
 - [Hardware](#hardware)
@@ -39,8 +48,26 @@ transmitter and protocol work is his (see [Credits](#credits)).
 - [Project documentation](#project-documentation)
 - [Limitations & platform notes](#limitations--platform-notes)
 - [Credits](#credits)
+- [License](#license)
 
 ---
+
+## Features
+
+- **Five longwave time stations across four regions** — DCF77, WWVB, MSF, JJY
+  (40/60 kHz) and an experimental BPC, each a self-contained encoder.
+- **Accurate carrier synthesis** straight off the Pi's general-purpose clock,
+  with second-aligned amplitude modulation under a real-time scheduler.
+- **Root-free dry-run** (`-n`) that prints the modulation envelope as ASCII —
+  great for understanding a protocol and the basis of the test suite.
+- **Set-and-forget appliance layer:** one config file, a `systemd` nightly
+  scheduler with NTP discipline and CPU-temperature monitoring, plus an
+  idempotent, upgrade-safe installer.
+- **Live, low-power web UI** for a Pi Zero W — pick the station, transmit on
+  demand, edit the schedule, and watch an auto-refreshing transmit status.
+- **Modular, data-driven watch guide** you extend by editing a JSON file.
+- **Tests and CI** — golden encoder regressions, a BPC self-test, host build and
+  a 32-bit ARM cross-compile on every push.
 
 ## Supported time services
 
@@ -75,12 +102,16 @@ for the minute marker, then decodes. Most stations transmit the data for the
 
 txtempus reproduces this by synthesising the carrier on the Pi's general-purpose
 clock output and toggling a second GPIO to attenuate it on schedule, aligned to
-real second boundaries under a real-time scheduler. Keep the Pi's clock accurate
-with `ntpd`/`chrony` (the included scheduler nudges NTP before each run).
+real second boundaries under a real-time scheduler (`SCHED_FIFO`). Keep the Pi's
+clock accurate with `ntpd`/`chrony` (the included scheduler nudges NTP before
+each run).
 
 ## Hardware
 
-### Raspberry Pi
+> txtempus targets the **Raspberry Pi** (the Pi Zero W is the recommended
+> appliance target). See [Limitations & platform notes](#limitations--platform-notes)
+> for the headless/HDMI caveat and unsupported models.
+
 Three resistors — 2×4.7 kΩ and 1×560 Ω (precision not critical) — wired to
 **GPIO4** (carrier) and **GPIO17** (attenuation):
 
@@ -99,20 +130,6 @@ if it won't receive, add more turns to the coil. For **MSF** you don't need
 GPIO17 or the 560 Ω resistor (it's on-off keyed) — a single 10 kΩ in place of the
 two 4.7 kΩ works. BPC uses the same wiring as DCF77.
 
-### Nvidia Jetson (experimental)
-Use one PWM pin (carrier) and one attenuation pin, plus an NPN transistor and the
-same resistors. Pins vary by model:
-
-|Devices|PWM pin (board #)|Attenuation pin (board #)|
-|-------|-------------------------|---------------------------------|
-|Jetson TX1 / TX2|Not supported|Not supported|
-|Jetson Xavier, Clara AGX Xavier, Jetson Orin|18|16|
-|Other devices|33|35|
-
-Schematic                       | Real world (Jetson Nano)
---------------------------------|------------------------------
-![](img/schematic-jetson.jpg)   |![](img/jetson-nano.jpg)
-
 ## Build
 
 ```sh
@@ -120,19 +137,9 @@ sudo apt-get install git build-essential cmake -y
 git clone https://github.com/tunlezah/dcf77.git
 cd dcf77
 mkdir build && cd build
-```
-
-**Raspberry Pi:**
-```sh
 cmake ../          # or: cmake ../ -DPLATFORM=rpi
 make
 sudo make install  # installs /usr/bin/txtempus
-```
-
-**Nvidia Jetson** (install [JetsonGPIO] first, and configure the pinmux):
-```sh
-cmake ../ -DPLATFORM=jetson
-make
 ```
 
 ## Run (command line)
@@ -178,19 +185,24 @@ sudo make install            # the binary, if you haven't already
 sudo ./deploy/install.sh
 ```
 
-`install.sh` is **idempotent / upgrade-safe**: it stops a running install,
-installs the files below, migrates an existing schedule, and warns about leftover
-txtempus **cron** entries (`--purge-cron` removes them). It installs:
+`install.sh` is **idempotent / upgrade-safe**: run from anywhere, it stops a
+running install, installs the files below, migrates an existing schedule, and
+warns about leftover txtempus **cron** entries (`--purge-cron` removes them). It
+installs:
 
 - **`/etc/txtempus.conf`** — the single source of truth (station, run duration,
-  zone offset, nightly schedule, web bind/port/PIN), shell-sourceable `KEY=VALUE`,
-  read by both the scheduler and the web UI.
+  zone offset, nightly schedule, web bind/port/PIN), shell-sourceable
+  `KEY=VALUE`, read by both the scheduler and the web UI. An existing config is
+  **never overwritten**, so your settings survive upgrades.
 - **systemd units** — `txtempus-scheduler.{service,timer}` (nightly runs at the
-  times in `SCHEDULE_TIMES`), `txtempus-oneshot.service` (on-demand transmit),
-  and `txtempus-web.service` (the web UI).
+  times in `SCHEDULE_TIMES`), `txtempus-oneshot.service` (on-demand transmit,
+  `Type=simple` so it reports "transmitting now" honestly and stops cleanly),
+  and `txtempus-web.service` (the web UI, run at idle priority so it never
+  preempts the real-time transmit loop).
 - **`txtempus-scheduler.sh`** — the nightly runner: nudges NTP, monitors CPU
   temperature, runs the binary for `RUN_DURATION`, records the last result.
-- **`txtempus-control.sh`** — the small privileged shim the web UI drives.
+- **`txtempus-control.sh`** — the small privileged shim the web UI drives (the
+  only state-changing surface: start/stop and schedule management).
 
 Typical setup: a Pi Zero W keeps its clock disciplined with `ntpd`/`chrony`, and
 the timer transmits for ~10 minutes a few times a night (default 01:59 / 02:59 /
@@ -203,6 +215,7 @@ sudo ./deploy/uninstall.sh                          # remove (add --purge to dro
 ```
 
 Prefer plain cron? A manual alternative:
+
 ```crontab
 57 1,2  * * *  root  /usr/bin/txtempus -s DCF77 -r 10
 ```
@@ -212,33 +225,40 @@ Prefer plain cron? A manual alternative:
 A tiny, dependency-free **Python-stdlib** sidecar (`web/txtempus-web.py`) serves
 one page plus a small JSON API on a trusted LAN. It is built for a Pi Zero W:
 ~0 % idle CPU, a few MB RAM, no extra packages, no build step. It **never
-transmits itself** — it only writes the config and asks systemd to (re)start the
-binary, staying out of the real-time transmit window.
+transmits itself** — it only writes the config and asks systemd (via
+`txtempus-control.sh`) to (re)start the binary, staying out of the real-time
+transmit window.
 
-After `install.sh`, open **`http://<your-pi>:8080/`** to:
+After `install.sh`, open **`http://<your-pi>:8080/`**.
 
-- **pick the station / region** (DCF77 / WWVB / MSF / JJY40 / JJY60 / BPC),
-- **transmit now / stop** for a chosen duration,
-- **edit the nightly schedule** — and see the saved times and the next run, so
-  you know exactly when it will broadcast,
-- see **what time the watch will be set to** (local for DCF77/MSF/JJY, UTC for
-  WWVB, plus any zone offset) and the **DST signal** being sent (CET/CEST,
-  GMT/BST; JJY/BPC have no DST),
-- use the **watch-sync helper**: type what your watch currently shows and it
-  tells you how far it has drifted (so you can tell whether its "2 AM" check is
-  really 2 AM),
-- read the **watch guide** for your model (see below),
-- watch **live status**: transmitting?, system time, NTP sync, CPU temperature,
-- **preview** a station's modulation (the `-n` chart), gated off while transmitting.
+### Live, low-power status
+
+The status panel **auto-refreshes** — it no longer updates only when you click:
+
+- The **browser ticks the clock and any countdowns locally every second**, so
+  the display stays live with **no extra server load**.
+- The page only fetches `/api/status` **occasionally**: roughly **every 60 s when
+  idle** and **every 15 s while transmitting**.
+- Polling **pauses while the browser tab is hidden** and resumes (with an
+  immediate refresh) when you return to it.
+- The server **caches the (subprocess-heavy) status for a couple of seconds**, so
+  multiple open tabs or bursts of polls can't overload the Pi Zero W.
+
+It clearly shows whether a transmission is actually happening — a live, pulsing
+**TX ACTIVE** indicator — with a live **countdown of how long the current
+broadcast will run**, plus the **next scheduled run** shown both as an absolute
+time and a relative "in Xh Ym" countdown. A manual refresh button is still there
+if you want an immediate, forced update.
 
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
-│  txtempus · time-signal transmitter                       [● TX ACTIVE] │
+│  txtempus · time-signal transmitter                    [● TX ACTIVE ⟳] │
 ├───────────────────────────────────────────────────────────────────────┤
-│  STATUS    State: Transmitting (DCF77, 77.5 kHz)                         │
+│  STATUS    State: Transmitting (DCF77, 77.5 kHz) · ends in 7m 41s        │
 │            Will set watch to: Sun 2026-06-07 02:03 (local)              │
 │            DST signal: CEST (central European summer time)               │
-│            Next run: tomorrow 01:59 · NTP: ✔ · CPU 48.7 °C               │
+│            Next run: 2026-06-08 01:59 (in 23h 56m) · NTP ✔ · CPU 48.7 °C │
+│            ─ auto-refreshing every 15s · last updated 3s ago ─           │
 ├───────────────────────────────────────────────────────────────────────┤
 │  STATION ( ) DCF77 — Germany/Europe 77.5 kHz   ( ) WWVB — USA 60 kHz ... │
 │  TRANSMIT NOW  Duration [10] min  [▶ Start] [■ Stop]                     │
@@ -246,6 +266,21 @@ After `install.sh`, open **`http://<your-pi>:8080/`** to:
 │  WATCH GUIDE  [ Citizen Skyhawk A-T (U680) ▾ ]                           │
 └───────────────────────────────────────────────────────────────────────┘
 ```
+
+The rest of the page lets you:
+
+- **pick the station / region** (DCF77 / WWVB / MSF / JJY40 / JJY60 / BPC),
+- **transmit now / stop** for a chosen duration,
+- **edit the nightly schedule**, with the saved times and the live next run shown,
+- see **what time the watch will be set to** (local for DCF77/MSF/JJY, UTC for
+  WWVB, plus any zone offset) and the **DST signal** being sent (CET/CEST,
+  GMT/BST; JJY/BPC have no DST),
+- use the **watch-sync drift helper**: type what your watch currently shows and
+  it tells you how far it has drifted (so you can tell whether its "2 AM" check
+  is really 2 AM),
+- read the **watch guide** for your model (see below),
+- **preview** a station's modulation (the `-n` chart), disabled while
+  transmitting to keep that CPU work out of the real-time window.
 
 **Security (LAN-only, deliberately light):** the UI is meant for a private
 network. It runs as root by default for simplicity; set an optional `WEB_PIN` in
@@ -275,13 +310,20 @@ test/run-golden.sh --update   # regenerate expected output after an intentional 
 python3 test/bpc_selftest.py  # BPC encoder round-trip (time, parity, frames, markers)
 ```
 
+The BPC self-test verifies the encoder is internally consistent (bit-packing,
+framing, parity, markers, pulse widths); it does **not** prove conformance to the
+real BPC broadcast format.
+
 ## Continuous integration
 
-`.github/workflows/build.yml` runs on every push/PR:
+[`.github/workflows/build.yml`](.github/workflows/build.yml) runs on every
+push/PR:
 
-- **Build & test (host):** builds, runs the golden tests and the BPC self-test.
-- **Cross-compile (32-bit ARM / Raspberry Pi):** installs `arm-linux-gnueabihf`
-  and builds, confirming the code compiles for the Pi's ARM target.
+- **Build & test (host):** builds, then runs the golden encoder tests and the
+  BPC self-test.
+- **Cross-compile (32-bit ARM / Raspberry Pi):** installs
+  `g++-arm-linux-gnueabihf` and builds, confirming the code compiles for the
+  Pi's ARM target.
 
 ## Project documentation
 
@@ -298,8 +340,11 @@ Deeper write-ups live alongside the code:
   carrier is shared with HDMI; connecting a monitor changes it and the
   transmission fails.
 - **Raspberry Pi 4 (BCM2711) is not supported** — frequency generation doesn't
-  work there, so txtempus now refuses to run on a Pi 4 unless you pass `-f`. Use
-  an older Pi (the Pi Zero W is the recommended target). Pull requests welcome.
+  work there, so txtempus refuses to run on a Pi 4 unless you pass `-f` (the
+  carrier may be wrong). Use an older Pi (the Pi Zero W is the recommended
+  target). Pull requests welcome.
+- Keep the Pi's clock **NTP-disciplined** (`ntpd`/`chrony`); the appliance
+  scheduler nudges NTP before each run, but accurate time is on you.
 - These protocols also carry bits for DST-change *announcements*, leap seconds
   and (on some stations) phase modulation, which are not generated. Consumer
   clocks are generally fine without them — the current DST state *is* sent.
@@ -312,11 +357,14 @@ Deeper write-ups live alongside the code:
 ## Credits
 
 - Original project and all core transmitter/protocol work:
-  **Henner Zeller** — [hzeller/txtempus]. Jetson port by Jueon Park.
-- Licensed under the **GNU General Public License** (see [`COPYING`](COPYING)).
+  **Henner Zeller** — [hzeller/txtempus].
 - This repository ([tunlezah/dcf77](https://github.com/tunlezah/dcf77)) adds the
-  appliance layer (config, systemd, installer), the web UI, the BPC station, the
-  watch guide, tests and CI.
+  appliance layer (config, systemd, idempotent installer), the web UI, the BPC
+  station, the modular watch guide, the tests and the CI.
+
+## License
+
+Licensed under the **GNU General Public License** — see [`COPYING`](COPYING).
 
 [DCF77]: https://en.wikipedia.org/wiki/DCF77
 [WWVB]: https://en.wikipedia.org/wiki/WWVB
@@ -324,5 +372,4 @@ Deeper write-ups live alongside the code:
 [JJY]: https://en.wikipedia.org/wiki/JJY
 [BPC]: https://en.wikipedia.org/wiki/BPC_(time_signal)
 [NTP]: https://en.wikipedia.org/wiki/Network_Time_Protocol
-[JetsonGPIO]: https://github.com/pjueon/JetsonGPIO
 [hzeller/txtempus]: https://github.com/hzeller/txtempus

@@ -36,6 +36,14 @@ _BUNDLED_WATCHES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wat
 ONESHOT_UNIT = "txtempus-oneshot.service"
 SCHED_UNIT = "txtempus-scheduler.service"
 TIMER_UNIT = "txtempus-scheduler.timer"
+ONESHOT_ENV = os.environ.get("TXTEMPUS_ONESHOT_ENV", "/run/txtempus/oneshot.env")
+
+# The status payload is intentionally cached for a couple of seconds: assembling
+# it spawns several systemctl/timedatectl subprocesses, and on a single-core Pi
+# Zero W we never want the (idle-priority) web UI to do that more often than it
+# has to -- even if several browser tabs poll at once. The cheap, always-live
+# fields (wall-clock epoch) are refreshed on every request regardless.
+STATUS_TTL_S = float(os.environ.get("TXTEMPUS_STATUS_TTL", "2"))
 
 # Station metadata (single source of truth for the UI labels + carrier).
 STATIONS = {
@@ -189,6 +197,49 @@ def cpu_temp_c():
         return None
 
 
+def read_oneshot_env():
+    """Per-run overrides the web UI wrote for the on-demand transmit (KEY=VALUE)."""
+    info = {}
+    try:
+        with open(ONESHOT_ENV) as f:
+            for line in f:
+                if "=" in line and not line.lstrip().startswith("#"):
+                    k, v = line.strip().split("=", 1)
+                    info[k.strip()] = v.strip()
+    except (FileNotFoundError, OSError):
+        pass
+    return info
+
+
+_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})")
+
+
+def systemd_ts_to_epoch(ts):
+    """Parse a systemd wall-clock stamp ('Sat 2026-06-07 02:03:11 BST') to Unix
+    epoch. The server runs on the device, so the bare date/time is local time and
+    the trailing zone abbreviation (which strptime can't parse portably) is
+    redundant -- we strip it and interpret the rest in the device's timezone."""
+    if not ts:
+        return None
+    m = _TS_RE.search(ts)
+    if not m:
+        return None
+    try:
+        return time.mktime(time.strptime(f"{m.group(1)} {m.group(2)}",
+                                         "%Y-%m-%d %H:%M:%S"))
+    except (ValueError, OverflowError):
+        return None
+
+
+def usec_to_epoch(v):
+    """systemd *USec* properties are microseconds since the epoch (0 = unset)."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n / 1e6 if n > 0 else None
+
+
 def transmitting_now():
     if is_active(ONESHOT_UNIT) or is_active(SCHED_UNIT):
         return True
@@ -229,7 +280,31 @@ def transmitted_info(station, zone_offset):
     }
 
 
-def build_status():
+# Short-lived cache so bursts of polls (or several open tabs) don't each spawn a
+# fistful of subprocesses on the little Pi. See STATUS_TTL_S above.
+_status_cache = {"at": 0.0, "data": None}
+
+
+def _live_fields():
+    """The handful of fields that must be exact on every request (they let the
+    browser tick a local clock between polls without hammering the server)."""
+    now = time.time()
+    lt = time.localtime(now)
+    return {
+        "system_time": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "server_epoch": now,
+        "tz_offset_s": lt.tm_gmtoff if lt.tm_gmtoff is not None else 0,
+    }
+
+
+def build_status(force=False):
+    now_mono = time.monotonic()
+    cached = _status_cache["data"]
+    if not force and cached is not None and (now_mono - _status_cache["at"]) < STATUS_TTL_S:
+        data = dict(cached)
+        data.update(_live_fields())
+        return data
+
     conf = read_conf()
     station = conf.get("STATION", "DCF77")
     zone = int(conf["ZONE_OFFSET"]) if conf.get("ZONE_OFFSET", "0").lstrip("-").isdigit() else 0
@@ -240,24 +315,41 @@ def build_status():
     rc, out, _ = run_cmd(["timedatectl", "show", "-p", "NTPSynchronized", "--value"])
     if rc == 0:
         ntp = (out.strip() == "yes")
-    return {
+
+    # When is the current broadcast expected to finish? Derive it from the unit's
+    # start time + the run duration that is actually in force (the on-demand path
+    # may override RUN_DURATION via oneshot.env). Best-effort: lets the UI show a
+    # live countdown instead of just "transmitting".
+    tx_started = systemd_ts_to_epoch(sc_value(active_unit, "ActiveEnterTimestamp")) if active_unit else None
+    run_min = clamp_minutes(conf.get("RUN_DURATION"), 10)
+    if active_unit == ONESHOT_UNIT:
+        run_min = clamp_minutes(read_oneshot_env().get("RUN_DURATION"), run_min)
+    tx_end = (tx_started + run_min * 60) if tx_started else None
+
+    data = {
         "transmitting": tx,
         "station": station,
         "carrier_hz": STATIONS.get(station, {}).get("carrier_hz"),
         "run_duration_min": clamp_minutes(conf.get("RUN_DURATION"), 10),
         "started_at": sc_value(active_unit, "ActiveEnterTimestamp") if active_unit else None,
-        "next_scheduled": sc_value(TIMER_UNIT, "NextElapseUSecRealtime") or None,
+        "tx_started_epoch": tx_started,
+        "tx_end_epoch": tx_end,
+        "next_run_epoch": usec_to_epoch(sc_value(TIMER_UNIT, "NextElapseUSecRealtime")),
         "schedule_enabled": conf.get("SCHEDULE_ENABLED", "true").lower() == "true",
         "schedule_times": clean_times(conf.get("SCHEDULE_TIMES", "")) or [],
         "timer_enabled": sc_value(TIMER_UNIT, "UnitFileState") == "enabled",
         "timer_active": is_active(TIMER_UNIT),
         "transmitted": transmitted_info(station, zone),
+        "zone_offset_min": zone,
         "last_run": read_last_run(),
-        "system_time": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
         "ntp_synchronized": ntp,
         "cpu_temp_c": cpu_temp_c(),
         "stations": STATIONS,
     }
+    data.update(_live_fields())
+    _status_cache["at"] = now_mono
+    _status_cache["data"] = data
+    return data
 
 
 def load_watches():
@@ -420,7 +512,9 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             return self._send(PAGE, "text/html; charset=utf-8")
         if path == "/api/status":
-            return self._send_json(build_status())
+            q = parse_qs(urlparse(self.path).query)
+            fresh = (q.get("fresh") or ["0"])[0] not in ("0", "", "false")
+            return self._send_json(build_status(force=fresh))
         if path == "/api/config":
             return self._send_json(get_config())
         if path == "/api/schedule":
@@ -457,6 +551,9 @@ class Handler(BaseHTTPRequestHandler):
             ok, payload, code = do_save_schedule(body)
         else:
             return self._send_json({"error": "not found"}, 404)
+        if code < 400:
+            # State just changed; drop the cached status so the next poll is live.
+            _status_cache["data"] = None
         payload.setdefault("ok", code < 400)
         return self._send_json(payload, code)
 
@@ -478,8 +575,13 @@ PAGE = r"""<!DOCTYPE html>
   header { display:flex; align-items:center; justify-content:space-between;
            padding:14px 20px; background:#131a21; border-bottom:1px solid #232c36; }
   header h1 { font-size:18px; margin:0; font-weight:600; }
-  .pill { font-size:12px; padding:4px 10px; border-radius:999px; background:#232c36; color:var(--muted); }
+  .pill { font-size:12px; padding:4px 10px; border-radius:999px; background:#232c36; color:var(--muted);
+          display:inline-flex; align-items:center; gap:7px; }
   .pill.on { background:rgba(63,185,80,.15); color:var(--ok); }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); flex:0 0 auto; }
+  .pill.on .dot { background:var(--ok); animation:pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1);} 50%{opacity:.35;transform:scale(.7);} }
+  @media (prefers-reduced-motion: reduce) { .pill.on .dot { animation:none; } }
   main { max-width:760px; margin:0 auto; padding:18px; display:grid; gap:16px; }
   .card { background:var(--card); border:1px solid #232c36; border-radius:10px; padding:16px; }
   .card h2 { margin:0 0 12px; font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
@@ -510,11 +612,11 @@ PAGE = r"""<!DOCTYPE html>
 <body>
 <header>
   <h1>txtempus &middot; time-signal transmitter</h1>
-  <span id="txpill" class="pill">—</span>
+  <span id="txpill" class="pill"><span class="dot"></span><span id="txpill-text">…</span></span>
 </header>
 <main>
   <section class="card">
-    <h2>Status <button class="secondary" style="float:right;padding:2px 8px" onclick="refresh()">&#x21bb;</button></h2>
+    <h2>Status <button class="secondary" style="float:right;padding:2px 8px" title="Refresh now" onclick="refresh(true)">&#x21bb;</button></h2>
     <div class="grid">
       <div class="k">State</div><div id="st-state">…</div>
       <div class="k">Will set watch to</div><div id="st-settime">…</div>
@@ -525,6 +627,7 @@ PAGE = r"""<!DOCTYPE html>
       <div class="k">NTP</div><div id="st-ntp">…</div>
       <div class="k">CPU temp</div><div id="st-temp">…</div>
     </div>
+    <div class="muted" id="st-updated" style="font-size:11px;margin-top:10px">&nbsp;</div>
   </section>
 
   <section class="card">
@@ -610,7 +713,39 @@ PAGE = r"""<!DOCTYPE html>
 
 <script>
 const $ = id => document.getElementById(id);
-let transmitting = false, pollTimer = null;
+
+// --- live-update state ------------------------------------------------------
+// The browser keeps a local clock ticking every second so the displayed time
+// (and any countdown) stays live WITHOUT polling the Pi each second. We only
+// fetch /api/status occasionally, slower when idle, and not at all while the
+// tab is hidden -- this is what keeps the load off the little Pi Zero W.
+let status = null;            // last /api/status payload
+let srvEpoch = 0;             // server wall-clock at last poll (Unix seconds)
+let perfBase = 0;             // performance.now() captured alongside srvEpoch
+let lastPollWall = 0;         // local wall time of last successful poll
+let transmitting = false;
+let pollTimer = null, clockTimer = null;
+const POLL_TX_MS = 15000;     // while transmitting: snappy enough to feel live
+const POLL_IDLE_MS = 60000;   // idle: just enough to catch schedule/NTP changes
+const POLL_ERR_MS = 15000;    // back off briefly after a failed fetch
+const WD = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+const pad = n => String(n).padStart(2, "0");
+function nowEpoch(){ return srvEpoch + (performance.now() - perfBase) / 1000; }
+function fmtDur(sec){
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s = sec%60;
+  if (h > 0) return h + "h " + pad(m) + "m";
+  if (m > 0) return m + "m " + pad(s) + "s";
+  return s + "s";
+}
+// Render a Unix epoch as the *Pi's* wall clock (using the server's UTC offset),
+// so it's correct regardless of the viewing browser's own timezone.
+function piDate(epoch, extraOffsetMin){
+  const off = (status && status.tz_offset_s) || 0;
+  return new Date((epoch + (extraOffsetMin||0)*60 + off) * 1000);
+}
+function fmtClockUTC(d){ return pad(d.getUTCHours())+":"+pad(d.getUTCMinutes())+":"+pad(d.getUTCSeconds()); }
 
 function toast(msg) {
   const t = $("toast"); t.textContent = msg; t.classList.add("show");
@@ -643,47 +778,107 @@ function renderStations(stations, current) {
 }
 function selectedStation(){ const el = document.querySelector("input[name=station]:checked"); return el?el.value:null; }
 
-async function refresh() {
-  let s; try { s = await (await fetch("/api/status")).json(); } catch(e){ return; }
-  window.lastStatus = s;
-  transmitting = s.transmitting;
-  $("txpill").textContent = transmitting ? "● TX ACTIVE" : "idle";
-  $("txpill").className = "pill" + (transmitting ? " on" : "");
-  let state = transmitting
-    ? `Transmitting (${s.station}, ${(s.carrier_hz/1000)} kHz)`
-    : "Idle";
-  $("st-state").textContent = state;
+// Fields that only change between polls (not every second) go here.
+function render(s){
   const t = s.transmitted || {};
-  $("st-settime").textContent = t.time
-    ? `${t.weekday} ${t.date} ${t.time} (${t.basis}${t.zone_offset_min ? ", offset "+t.zone_offset_min+" min" : ""})`
-    : "—";
   $("st-dst").textContent = t.dst_text || "—";
-  $("st-next").textContent = s.next_scheduled || (s.schedule_enabled ? "—" : "disabled");
-  $("st-last").textContent = s.last_run ? `${fmtTime(s.last_run.at)} → ${s.last_run.result} (${s.last_run.duration}m)` : "—";
-  $("st-time").textContent = fmtTime(s.system_time);
-  $("st-ntp").textContent = s.ntp_synchronized===null ? "unknown" : (s.ntp_synchronized ? "✔ synced" : "✘ not synced");
+  $("st-last").textContent = s.last_run
+    ? `${fmtTime(s.last_run.at)} → ${s.last_run.result} (${s.last_run.duration}m)` : "—";
+  $("st-ntp").textContent = s.ntp_synchronized===null ? "unknown"
+    : (s.ntp_synchronized ? "✔ synced" : "✘ not synced");
   $("st-temp").textContent = s.cpu_temp_c===null ? "n/a" : (s.cpu_temp_c + " °C");
-  // Schedule summary line.
   const times = (s.schedule_times||[]).join(", ") || "none set";
   $("sched-summary").innerHTML = s.schedule_enabled
     ? `<b style="color:var(--ok)">Enabled</b> — broadcasting at <b>${times}</b>.`
-      + (s.next_scheduled ? ` Next run: <b>${s.next_scheduled}</b>.` : "")
     : `<b style="color:var(--warn)">Disabled</b> — no automatic broadcasts (saved times: ${times}).`;
-  // Keep the preview button out of the RT window.
+  // Keep the (CPU-bound) preview out of the real-time transmit window.
   $("preview-btn").disabled = transmitting;
   $("preview-note").textContent = transmitting ? "disabled while transmitting" : "";
-  // Back off polling during a broadcast.
-  scheduleNextPoll(transmitting ? 10000 : 4000);
+}
+
+// Runs every second, purely client-side (no network): keeps the clock, the
+// "will set watch to" minute, and the live countdowns moving between polls.
+function tick(){
+  if (!status) return;
+  const e = nowEpoch(), s = status, t = s.transmitted || {};
+  // Header pill + state line, with a live countdown while transmitting.
+  let remain = "";
+  if (transmitting && s.tx_end_epoch) {
+    const left = s.tx_end_epoch - e;
+    remain = left > 0 ? ` · ends in ${fmtDur(left)}` : " · finishing…";
+  }
+  $("txpill").className = "pill" + (transmitting ? " on" : "");
+  $("txpill-text").textContent = transmitting ? "TX ACTIVE" : "idle";
+  $("st-state").textContent = transmitting
+    ? `Transmitting (${s.station}, ${s.carrier_hz/1000} kHz)${remain}`
+    : "Idle";
+  // "Will set watch to": UTC-basis stations (WWVB) ignore the device tz offset.
+  if (t.basis){
+    const d = piDate(e, (t.zone_offset_min||0)), local = t.basis !== "UTC";
+    const dd = local ? d : new Date((e + (t.zone_offset_min||0)*60) * 1000);
+    const wd = dd.getUTCDay(), Y = dd.getUTCFullYear();
+    const md = `${pad(dd.getUTCMonth()+1)}-${pad(dd.getUTCDate())}`;
+    const hm = `${pad(dd.getUTCHours())}:${pad(dd.getUTCMinutes())}`;
+    $("st-settime").textContent = `${WD[wd]} ${Y}-${md} ${hm} (${t.basis}`
+      + (t.zone_offset_min ? `, offset ${t.zone_offset_min} min)` : ")");
+  } else { $("st-settime").textContent = "—"; }
+  // System time = the Pi's own wall clock, ticking each second.
+  $("st-time").textContent = `${fmtClockUTC(piDate(e))} (Pi local)`;
+  // Next scheduled run, with a relative countdown.
+  if (!s.schedule_enabled) $("st-next").textContent = "disabled";
+  else if (s.next_run_epoch){
+    const inS = s.next_run_epoch - e;
+    $("st-next").textContent = `${fmtTime(s.next_run_epoch*1000)} (in ${fmtDur(inS)})`;
+  } else $("st-next").textContent = "—";
+  // Schedule card: append the live "next run" line.
+  if (s.schedule_enabled && s.next_run_epoch){
+    const base = $("sched-summary");
+    if (base.dataset.base === undefined) base.dataset.base = base.innerHTML;
+    base.innerHTML = base.dataset.base
+      + ` Next run: <b>${fmtTime(s.next_run_epoch*1000)}</b> (in ${fmtDur(s.next_run_epoch - e)}).`;
+  }
+  // Freshness hint.
+  if (lastPollWall){
+    const age = Math.round(Date.now()/1000 - lastPollWall);
+    $("st-updated").textContent =
+      `Auto-refreshing every ${transmitting?POLL_TX_MS/1000:POLL_IDLE_MS/1000}s`
+      + ` · last updated ${age}s ago` + (document.hidden ? " · paused (tab hidden)" : "");
+  }
+}
+
+function schedulePoll(ms){
+  clearTimeout(pollTimer);
+  if (document.hidden) return;           // don't poll a hidden tab; resume on focus
+  pollTimer = setTimeout(() => refresh(), ms);
+}
+
+async function refresh(force){
+  if (document.hidden && !force) return;
+  let s;
+  try {
+    s = await (await fetch("/api/status" + (force ? "?fresh=1" : ""))).json();
+  } catch(e){
+    schedulePoll(POLL_ERR_MS);            // transient failure: retry, don't die
+    return;
+  }
+  status = s;
+  transmitting = !!s.transmitting;
+  srvEpoch = s.server_epoch || (Date.now()/1000);
+  perfBase = performance.now();
+  lastPollWall = Date.now()/1000;
+  delete $("sched-summary").dataset.base; // recompute the schedule "next run" line
+  render(s);
+  tick();
+  schedulePoll(transmitting ? POLL_TX_MS : POLL_IDLE_MS);
 }
 
 function calcDrift(){
   const v = $("watch-time").value, out = $("drift-out");
   if (!v){ out.textContent = "Enter the time your watch shows."; return; }
-  const s = window.lastStatus;
-  if (!s || !s.system_time){ out.textContent = "No status yet — try again in a moment."; return; }
-  const now = new Date(s.system_time);
+  if (!status){ out.textContent = "No status yet — try again in a moment."; return; }
+  const now = piDate(nowEpoch());                 // the Pi's wall clock right now
   const [wh, wm] = v.split(":").map(Number);
-  let diff = (wh*60+wm) - (now.getHours()*60 + now.getMinutes());   // minutes: watch - real
+  let diff = (wh*60+wm) - (now.getUTCHours()*60 + now.getUTCMinutes());   // minutes: watch - real
   if (diff > 720) diff -= 1440;
   if (diff < -720) diff += 1440;
   const mag = Math.abs(diff);
@@ -699,7 +894,6 @@ function calcDrift(){
     + `Tip: press <b>Start</b> (Transmit now) to sync it immediately if your watch has a manual-receive, `
     + `or it will resync at the next scheduled window once it drifts within range.`;
 }
-function scheduleNextPoll(ms){ clearTimeout(pollTimer); pollTimer = setTimeout(refresh, ms); }
 
 async function loadConfig() {
   const c = await (await fetch("/api/config")).json();
@@ -711,18 +905,19 @@ async function loadConfig() {
 }
 
 async function saveStation(){ const st=selectedStation(); if(!st) return;
-  await postJSON("/api/config", {station:st}); toast("Station saved: "+st); refresh(); }
-async function saveZone(){ await postJSON("/api/config", {zone_offset:parseInt($("zone").value||"0")}); toast("Saved"); }
+  await postJSON("/api/config", {station:st}); toast("Station saved: "+st); refresh(true); }
+async function saveZone(){ await postJSON("/api/config", {zone_offset:parseInt($("zone").value||"0")}); toast("Saved"); refresh(true); }
 async function txStart(){
   await postJSON("/api/transmit/start",
     {station:selectedStation(), minutes:parseInt($("dur").value||"10"), dryrun:$("dry").checked});
-  toast($("dry").checked ? "Dry-run (see Advanced › Preview)" : "Transmit started"); setTimeout(refresh, 600);
+  toast($("dry").checked ? "Dry-run (see Advanced › Preview)" : "Transmit started");
+  setTimeout(() => refresh(true), 600);
 }
-async function txStop(){ await postJSON("/api/transmit/stop", {}); toast("Stopped"); setTimeout(refresh, 600); }
+async function txStop(){ await postJSON("/api/transmit/stop", {}); toast("Stopped"); setTimeout(() => refresh(true), 600); }
 async function saveSchedule(){
   await postJSON("/api/schedule",
     {enabled:$("sched-on").checked, times:$("sched-times").value, duration:parseInt($("dur").value||"10")});
-  toast("Schedule saved"); refresh();
+  toast("Schedule saved"); refresh(true);
 }
 async function preview(){
   const st = selectedStation(); const out = $("preview-out");
@@ -769,8 +964,12 @@ function renderWatch(){
 // Re-render the watch guide when the chosen station changes (updates the ✓/✗).
 $("stations").addEventListener("change", () => { if ($("watch-select").value !== "") renderWatch(); });
 
-loadConfig().then(refresh);
+// Re-poll immediately when the tab becomes visible again (we pause while hidden).
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(true); });
+
+loadConfig().then(() => refresh(true));
 loadWatches();
+clockTimer = setInterval(tick, 1000);   // local clock/countdowns, no network cost
 </script>
 </body>
 </html>
