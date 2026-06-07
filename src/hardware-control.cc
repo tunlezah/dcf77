@@ -20,7 +20,7 @@
 
 HardwareControl::HardwareControl() : pimpl(std::unique_ptr<Implementation>(new Implementation())){}
 HardwareControl::~HardwareControl() = default;
-bool HardwareControl::Init() { return pimpl->Init(); }
+bool HardwareControl::Init(bool allow_unsupported) { return pimpl->Init(allow_unsupported); }
 double HardwareControl::StartClock(double frequency_hertz) { return pimpl->StartClock(frequency_hertz); }
 void HardwareControl::StopClock() { pimpl->StopClock(); }
 void HardwareControl::EnableClockOutput(bool b) { pimpl->EnableClockOutput(b); }

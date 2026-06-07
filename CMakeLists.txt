@@ -16,6 +16,7 @@ set(SRC_FILES
     src/wwvb-source.cc
     src/jjy-source.cc
     src/msf-source.cc
+    src/bpc-source.cc
     src/hardware-control.cc)
 
 set(INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/include)

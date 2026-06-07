@@ -1,0 +1,16 @@
+[Unit]
+Description=Run txtempus broadcaster at scheduled times
+Requires=txtempus-scheduler.service
+
+[Timer]
+# Default nightly times. The web UI / txtempus-control.sh overrides these via a
+# drop-in (txtempus-scheduler.timer.d/schedule.conf) generated from
+# SCHEDULE_TIMES in /etc/txtempus.conf, so this stays the single source of truth.
+OnCalendar=*-*-* 01:59:00
+OnCalendar=*-*-* 02:59:00
+OnCalendar=*-*-* 03:59:00
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

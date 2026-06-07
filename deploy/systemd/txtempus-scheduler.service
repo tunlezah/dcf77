@@ -1,0 +1,14 @@
+[Unit]
+Description=txtempus scheduled time-signal broadcast
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/txtempus-scheduler.sh
+StandardOutput=journal
+StandardError=journal
+# Generous: covers RUN_DURATION + NTP/temperature overhead.
+TimeoutStartSec=9000
+RemainAfterExit=no

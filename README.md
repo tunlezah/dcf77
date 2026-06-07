@@ -61,6 +61,20 @@ If you're in/or want to display a different time-zone, issue
 [#17](https://github.com/hzeller/txtempus/issues/17) might be of interest to
 you.
 
+#### BPC (experimental)
+The [BPC] (China) signal is a 68.5kHz carrier from the National Time Service
+Center. Unlike the others it uses **quaternary** pulse-width modulation: each
+second the carrier is reduced (to ~10%) for 100/200/300/400 ms, encoding a
+2-bit symbol, and a 20-second frame is sent three times per minute. Choose it
+with `-s BPC`.
+
+**This one is marked experimental.** The carrier and modulation mechanism are
+implemented and visible with `-n`, but BPC's exact field/bit layout is
+reverse-engineered (the official format isn't openly published) and the mapping
+in `src/bpc-source.cc` is a *tentative best-effort that has not yet been verified
+against a real receiver*. If you have a BPC-capable clock (e.g. a Citizen
+Skyhawk set to a Chinese city, or a Casio Multi-Band 6), please test and report.
+
 ### Minimal External Hardware
 #### Raspberry Pi
 The external hardware is simple: we use the frequency output on one pin and
@@ -138,8 +152,8 @@ watch/clock.
 ### Build
 ```
  sudo apt-get install git build-essential cmake -y
- git clone https://github.com/hzeller/txtempus.git
- cd txtempus
+ git clone https://github.com/tunlezah/dcf77.git
+ cd dcf77
  mkdir build && cd build
 ```
 
@@ -176,12 +190,13 @@ different times for testing.
 ```
 usage: ./txtempus [options]
 Options:
-        -s <service>          : Service; one of 'DCF77', 'WWVB', 'JJY40', 'JJY60', 'MSF'
+        -s <service>          : Service; one of 'DCF77', 'WWVB', 'JJY40', 'JJY60', 'MSF', 'BPC'
         -r <minutes>          : Run for limited number of minutes. (default: no limit)
         -t 'YYYY-MM-DD HH:MM' : Transmit the given local time (default: now)
         -z <minutes>          : Transmit the time offset from local (default: 0 minutes)
         -v                    : Verbose.
         -n                    : Dryrun, only showing modulation envelope.
+        -f                    : Force run on unsupported hardware (e.g. Pi 4); carrier may be wrong.
         -h                    : This help.
 ```
 
@@ -236,6 +251,18 @@ $ ./txtempus -n -s wwvb
   ... and so on for the whole minute ...
 ```
 
+### Tests
+A small golden-output test exercises every station's encoder through the `-n`
+dry-run (no root, no Pi) and compares against committed expected envelopes, so
+accidental changes to a protocol encoder are caught immediately:
+
+```
+ cmake -S . -B build && cmake --build build
+ test/run-golden.sh                 # check (PASS/FAIL per station)
+ test/run-golden.sh --update        # regenerate expected output after an
+                                    # intentional encoder change
+```
+
 ### Limitations
 In some of these protocols, there are additional bits that contain
 information about upcoming daylight saving times, leap seconds or difference
@@ -257,6 +284,56 @@ After building, you can install the binary in some standard location
  sudo make install
 ```
 
+#### Appliance deployment: config file, scheduler & web UI
+
+This fork adds an opinionated appliance setup under [`deploy/`](deploy/) and a
+tiny LAN web UI under [`web/`](web/). After `sudo make install`:
+
+```
+ sudo ./deploy/install.sh
+```
+
+This installs:
+
+- **`/etc/txtempus.conf`** — a single source of truth (station, run duration,
+  zone offset, nightly schedule, web bind/port/PIN). It is plain shell-sourceable
+  `KEY=VALUE`, read by both the scheduler and the web UI.
+- **systemd units** — `txtempus-scheduler.{service,timer}` (nightly runs, times
+  taken from `SCHEDULE_TIMES`), `txtempus-oneshot.service` (on-demand transmit),
+  and `txtempus-web.service` (the web UI).
+- **`txtempus-scheduler.sh`** — the nightly runner (NTP sync + CPU-temperature
+  monitoring), now config-driven (the old hard-coded path is gone).
+- **`txtempus-control.sh`** — the small privileged shim the web UI calls to
+  drive systemd.
+
+Then open `http://<your-pi>:8080/` to:
+
+- pick the **station / region** (DCF77/WWVB/MSF/JJY40/JJY60),
+- **transmit on demand** (start/stop) or **edit the nightly schedule** (you see
+  the active times and the next run, so you know exactly when it will broadcast),
+- see **what time the watch will be set to** and the **DST signal** being sent
+  (e.g. CET/CEST for DCF77, GMT/BST for MSF; JJY/JST has no DST),
+- use the **watch-sync helper**: enter what your watch currently shows and it
+  tells you how far it has drifted (so you can tell whether its "2 AM" check is
+  really 2 AM),
+- read the **watch guide**: pick your model (e.g. Citizen Skyhawk A-T, Casio
+  Multi-Band 6) for the basics of which stations it receives, how to set it up,
+  and when it syncs. This is modular — add your own to
+  `/etc/txtempus-watches.json` (no code change), and
+- watch live status (transmitting?, NTP sync, CPU temperature).
+
+The web UI targets a trusted LAN on a Pi Zero W: Python-stdlib only (no extra
+packages), ~0 % idle CPU, and it never transmits itself — it only writes the
+config and asks systemd to (re)start the binary, staying out of the real-time
+transmit window. See [`web.md`](web.md) for the full design and
+[`summary.md`](summary.md)/[`todo.md`](todo.md) for the project analysis.
+
+**Upgrading / uninstalling.** `deploy/install.sh` is safe to re-run: it stops a
+running install, replaces the files, migrates an existing schedule, and warns
+about any leftover txtempus **cron** entries (pass `--purge-cron` to remove
+them). To remove everything, run `sudo ./deploy/uninstall.sh` (add `--purge` to
+also delete `/etc/txtempus.conf`).
+
 #### Watch holder
 Each set-up will be different. In my case, I need my DCF77 radio
 watch getting set over night. So I built this watch holder that presents the
@@ -269,10 +346,12 @@ stratum 1 NTP servers keeping it at atomic time within ±50ms.
 This particular watch only checks the radio twice a day at 2am and 3am, so
 there is a cron-job that runs `txtempus` around these times for a few minutes.
 
-#### Crontab
+#### Crontab (manual alternative)
 
-If you put the following line in your `/etc/crontab` txtempus will be started
-at 1:57 and 2:57 at night and runs for 10 minutes.
+The appliance deploy above (systemd timer driven by `SCHEDULE_TIMES` in
+`/etc/txtempus.conf`) is the recommended way to schedule runs. If you'd rather
+use plain cron, putting the following line in your `/etc/crontab` starts
+txtempus at 1:57 and 2:57 at night for 10 minutes.
 
 ```crontab
 57 1,2    * * *   root    /usr/bin/txtempus -s DCF77 -r 10
@@ -292,6 +371,7 @@ watch holder             | ... with watch
 
 [DCF77]: https://en.wikipedia.org/wiki/DCF77
 [WWVB]: https://en.wikipedia.org/wiki/WWVB
+[BPC]: https://en.wikipedia.org/wiki/BPC_(time_signal)
 [JJY]: https://en.wikipedia.org/wiki/JJY
 [MSF]: https://en.wikipedia.org/wiki/Time_from_NPL_(MSF)
 [NTP]: https://en.wikipedia.org/wiki/Network_Time_Protocol

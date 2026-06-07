@@ -293,7 +293,15 @@ static uint32_t *mmap_bcm_register(off_t register_offset) {
   return result;
 }
 
-bool GPIO::Init() {
+bool GPIO::Init(bool allow_unsupported) {
+  if (GetPiModel() == PI_MODEL_4 && !allow_unsupported) {
+    fprintf(stderr,
+            "Error: clock generation is known NOT to work on the Raspberry Pi 4 "
+            "(BCM2711); it would emit a wrong or absent carrier.\n"
+            "Use an older Pi (the Pi Zero W is the recommended target), or pass "
+            "-f to force an attempt anyway.\n");
+    return false;
+  }
   gpio_port_ = mmap_bcm_register(GPIO_REGISTER_OFFSET);
   if (gpio_port_ == nullptr) {
     fprintf(stderr, "Need to be root\n");

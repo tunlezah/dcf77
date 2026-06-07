@@ -1,0 +1,27 @@
+# Build output (was previously committed by mistake)
+/build/
+
+# Compiled objects / binaries / probes
+*.o
+*.obj
+*.a
+*.so
+a.out
+
+# CMake-generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+# Editor / OS cruft
+*.swp
+*~
+.DS_Store
+
+# Python (web sidecar)
+__pycache__/
+*.pyc
+
+# Runtime
+*.log

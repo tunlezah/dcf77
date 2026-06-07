@@ -30,7 +30,7 @@ class HardwareControl::Implementation {
   // The GPIO bit that is pulled down for attenuation of the signal.
   static const uint32_t kAttenuationGPIOBit;
 
-  bool Init();
+  bool Init(bool allow_unsupported = false);
 
   // Initialize outputs for given bits.
   // Returns the bits that are physically available and could be set for output.
