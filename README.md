@@ -342,6 +342,8 @@ push/PR:
 Deeper write-ups live alongside the code:
 
 - [`summary.md`](summary.md) — architecture and what the project does.
+- [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — console diagnostics: check what's
+  running, the schedule/timer, logs, and health when something isn't working.
 - [`todo.md`](todo.md) — review: what works, what's flawed, prioritised fixes.
 - [`future.md`](future.md) — prior art and a roadmap of possible additions.
 - [`web.md`](web.md) — the full design behind the web interface.
