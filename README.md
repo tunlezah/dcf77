@@ -1,237 +1,164 @@
-Radio time station transmitter using the Raspberry Pi and Nvidia Jetson
-=====================================================
+# txtempus — radio time-station transmitter & Raspberry Pi appliance
 
-I am living in a country where there is no [DCF77] sender nearby for my
-European radio controlled wristwatch to get its time. This vintage
-Junghans Mega doesn't have any buttons to set the time, so to bring it back to
-life, I built my own 'transmitter', taking the [NTP] time of a Raspberry Pi
-and generating a modulated signal via GPIO pins to then magnetically couple
-it into the watch ferrite.
+Bring a radio-controlled clock or watch back to life where it can't hear its
+time station. **txtempus** takes the (NTP-disciplined) system clock of a
+Raspberry Pi and generates a low-frequency, amplitude-modulated carrier on a
+GPIO pin. Magnetically coupled through a small wire loop held a few centimetres
+away, that signal sets [DCF77], [WWVB], [MSF], [JJY] and [BPC] clocks/watches.
 
-Since many other long-wave time stations around the world use similar
-concepts of sending amplitude modulated time, other time services have been
-added.
+This fork packages the original command-line transmitter into a small,
+config-driven **appliance** for a Raspberry Pi Zero W on a home LAN:
 
-This program is useful if you have a clock that otherwise does not get any
-reception. This magnetical coupling is very low power and only works over a few
-centimeters, but **_before running this program, make sure you follow your
-local laws with regard to restrictions on radio transmissions._**
+- a single config file (`/etc/txtempus.conf`),
+- a `systemd` scheduler that broadcasts for a few minutes at night,
+- a tiny **web UI** to pick the station/region, transmit on demand, edit the
+  schedule, see what time/DST is being sent, and read a per-model **watch guide**,
+- an installer/uninstaller, encoder **tests**, and **CI** that cross-compiles for ARM.
 
-### Platform
-txtempus supports Raspberry Pi series and Nvidia Jetson Series (experimental).
+> ⚠️ **Before you transmit, make sure you follow your local laws on radio
+> transmissions.** The coupling here is intentionally very weak (a few cm range)
+> to set a nearby watch without causing interference — but the responsibility is
+> yours.
 
-#### Raspberry Pi
-So far, it has been tested on a Pi3 and a
-Pi Zero W. There has been a report of different frequencies generated with
-an older Pi (Bug #1), so until we have a definitive list of available
-clock sources inside these, check out that bug for a workaround.
+This is a fork of Henner Zeller's [hzeller/txtempus]; all credit for the core
+transmitter and protocol work is his (see [Credits](#credits)).
 
-#### Nvidia Jetson Series (experimental)
-So far, it has been tested only on a Jetson Nano,
-but all Jetson devices except for TX1 and TX2 (there is no available pwm pin) are supported.
+---
 
+## Contents
+- [Supported time services](#supported-time-services)
+- [How it works](#how-it-works)
+- [Hardware](#hardware)
+- [Build](#build)
+- [Run (command line)](#run-command-line)
+- [Appliance: config, scheduler & install](#appliance-config-scheduler--install)
+- [Web interface](#web-interface)
+- [Watch guide (modular)](#watch-guide-modular)
+- [Tests](#tests)
+- [Continuous integration](#continuous-integration)
+- [Project documentation](#project-documentation)
+- [Limitations & platform notes](#limitations--platform-notes)
+- [Credits](#credits)
 
-### Supported Time Services
-#### DCF77
-The [DCF77] (Germany) signal is a 77.5kHz carrier, that is amplitude modulated
-with attenuations every second of the minute except the 59th to synchronize.
-The length of the attenuation (100ms and 200ms) denotes bit values 0 and 1
-respectively so in each minute, 59 bits can be transferred, containing
-date and time information.
+---
 
-The Raspberry Pi has ways to create frequencies by integer division and
-fractional jitter around that, which allows us to generate a frequency
-of 77500.003Hz, which is close enough. Can be chosen with `-s DCF77` option.
+## Supported time services
 
-#### WWVB
-The [WWVB] (USA) is on a 60kHz carrier, and also transmits one bit per second
-with different attenuation times (200ms zero, 500ms one; 800ms sync) and
-multiple synchronization bits. Use `-s WWVB` option for this one.
+| Service | Region | Carrier | CLI | Notes |
+|---|---|---|---|---|
+| **DCF77** | Germany / Europe | **77.5 kHz** | `-s DCF77` | Pi synthesises ~77500.003 Hz |
+| **WWVB** | USA | **60 kHz** | `-s WWVB` | Transmitted in UTC |
+| **MSF** | United Kingdom | **60 kHz** | `-s MSF` | On-off keyed (no attenuation pin needed) |
+| **JJY** | Japan | **40 / 60 kHz** | `-s JJY40` / `-s JJY60` | Two transmitters exist |
+| **BPC** ⚠️ | China | **68.5 kHz** | `-s BPC` | **Experimental** — see below |
 
-#### MSF
-The [MSF] (United Kingdom) has yet another encoding, transferring two bits
-per second. Carrier is 60kHz. Option is `-s MSF`.
+Each is a self-contained `TimeSignalSource` subclass (carrier frequency + a
+per-second amplitude-modulation pattern), so adding a station doesn't touch the
+others.
 
-#### JJY
-The [JJY] (Japan) is similar to WWVB, with same timings of carrier switches,
-but reversed power levels. Some bits are different. Two senders exist in Japan
-with 40kHz and 60kHz carrier; their simulations can be chosen
-with command line options `-s JJY40` and `-s JJY60`.
-If you're in/or want to display a different time-zone, issue
-[#17](https://github.com/hzeller/txtempus/issues/17) might be of interest to
-you.
+**BPC is experimental.** It uses *quaternary* pulse-width modulation (each
+second the carrier is reduced for 100/200/300/400 ms to encode a 2-bit symbol;
+a 20-second frame is sent three times per minute). The carrier and modulation
+mechanism are implemented and visible with `-n`, but BPC's exact field/bit
+layout is reverse-engineered — the mapping in `src/bpc-source.cc` is a tentative
+best-effort that has not been verified against a real receiver. If you have a
+BPC-capable clock (e.g. a Citizen Skyhawk set to a Chinese city, or a Casio
+Multi-Band 6), please test and report.
 
-#### BPC (experimental)
-The [BPC] (China) signal is a 68.5kHz carrier from the National Time Service
-Center. Unlike the others it uses **quaternary** pulse-width modulation: each
-second the carrier is reduced (to ~10%) for 100/200/300/400 ms, encoding a
-2-bit symbol, and a 20-second frame is sent three times per minute. Choose it
-with `-s BPC`.
+## How it works
 
-**This one is marked experimental.** The carrier and modulation mechanism are
-implemented and visible with `-n`, but BPC's exact field/bit layout is
-reverse-engineered (the official format isn't openly published) and the mapping
-in `src/bpc-source.cc` is a *tentative best-effort that has not yet been verified
-against a real receiver*. If you have a BPC-capable clock (e.g. a Citizen
-Skyhawk set to a Chinese city, or a Casio Multi-Band 6), please test and report.
+Each station broadcasts the time as one (or two) bits per second by briefly
+**reducing the carrier amplitude** (or, for MSF, switching it off). Over a
+minute the bits carry the full date/time as BCD with parity; the receiver waits
+for the minute marker, then decodes. Most stations transmit the data for the
+*upcoming* minute and switch over on the minute boundary.
 
-### Minimal External Hardware
-#### Raspberry Pi
-The external hardware is simple: we use the frequency output on one pin and
-another pin to pull the signal to a lower level for the regular attenuation.
+txtempus reproduces this by synthesising the carrier on the Pi's general-purpose
+clock output and toggling a second GPIO to attenuate it on schedule, aligned to
+real second boundaries under a real-time scheduler. Keep the Pi's clock accurate
+with `ntpd`/`chrony` (the included scheduler nudges NTP before each run).
 
-To operate, you need three resistors: 2x4.7kΩ and one 560Ω (precision not
-critical), wired to GPIO4 and GPIO17 like so:
+## Hardware
+
+### Raspberry Pi
+Three resistors — 2×4.7 kΩ and 1×560 Ω (precision not critical) — wired to
+**GPIO4** (carrier) and **GPIO17** (attenuation):
 
 Schematic                      | Real world
 -------------------------------|------------------------------
 ![](img/schematic-dcf77.png)   |![](img/contacts-dcf77.jpg)
 
-
-GPIO4 and 17 are on the inner row of the Header pin, three pins inwards on
-the [Raspberry Pi GPIO]-Header.
-
-You don't need GPIO17 and the 560Ω resistor for `MSF`, as that works with
-switching the signal (on-off keying) instead of attenuating. In that case, you
-can replace the sequence of two 4.7kΩ resistors with a single 10kΩ.
-
-Now, wire a loop of wire between the open end of the one 4.7kΩ and ground - this
-loop acts as coupling coil to the watch ferrite antenna.
-The signal is very weak, so bring this wire-loop close to your radio
-watch/clock.
-
-In the following image, which was the first experiment, it is wrapped around
-the antenna, but it is not strictly needed: anything within a few centimeters
-should work.
+GPIO4 and GPIO17 are on the inner row of the header, three pins in. Wire a loop
+of wire (≈10–20 turns) between the open end of one 4.7 kΩ and ground — this is
+the coupling coil. Bring it within a few centimetres of the watch/clock antenna.
 
 ![](img/watch-wired.jpg)
 
-Being too close to the clock can confuse a sensitive receiver, so you might need
-to experiment with the distance. If your clock/watch is not receiving, add more
-turns to your transmission coil. In the picture at the bottom of the page
-you see that I am using about 10-20 turns on the coil (reddish oval lying on
-the Pi).
+Being *too* close can confuse a sensitive receiver, so experiment with distance;
+if it won't receive, add more turns to the coil. For **MSF** you don't need
+GPIO17 or the 560 Ω resistor (it's on-off keyed) — a single 10 kΩ in place of the
+two 4.7 kΩ works. BPC uses the same wiring as DCF77.
 
-This set-up should work for most watches if you have them in close vicinity.
+### Nvidia Jetson (experimental)
+Use one PWM pin (carrier) and one attenuation pin, plus an NPN transistor and the
+same resistors. Pins vary by model:
 
-The antenna set-up is intentionally not optimal to just be good enough for
-a local watch but hopefully not causing interference.
-Further improvements of course can be done to the antenna for increased
-transmission distance, such as using a ferrite, making it an LC circuit or
-adding an amplifier. *Only go in this direction after familiarizing yourself
-with allowances of radio transmissions in your area on your frequency of
-interest.*
-
-#### Nvidia Jetson Series (experimental)
-(*Please read the external hardware for the Raspberry Pi above first.)
-On Jetson, the external hardware setup is slightly different from the Raspberry Pi.
-
-We need one "PWM Pin" for a frequency output, and one "Attenuation Pin" for modulating the signal.
-These pins vary by the Jetson model. Please check the following table.
-
-|Devices|PWM pin (Board numbering)|Attenuation pin (Board numbering)|
+|Devices|PWM pin (board #)|Attenuation pin (board #)|
 |-------|-------------------------|---------------------------------|
-|Jetson TX1, Jetson TX2|Not supported|Not supported|
+|Jetson TX1 / TX2|Not supported|Not supported|
 |Jetson Xavier, Clara AGX Xavier, Jetson Orin|18|16|
 |Other devices|33|35|
 
-To operate, you need three resistors: 2x4.7kΩ and one 560Ω (precision not
-critical) and one NPN transistor (nearly any NPN transistor should work. I'm using KTC3198).
-
-Here's the full schematic of the external hardware for the Jetson Series:
-Schematic                      | Real world (Jetson Nano)
--------------------------------|------------------------------
+Schematic                       | Real world (Jetson Nano)
+--------------------------------|------------------------------
 ![](img/schematic-jetson.jpg)   |![](img/jetson-nano.jpg)
 
-Like the Raspberry Pi, you don't need the Attenuation Pin and the 560Ω resistor for `MSF`,
-and a wire-loop between the 4.7kΩ register and the ground acts as coupling coil. Bring this wire-loop close to your radio
-watch/clock.
+## Build
 
-![](img/watch-on-wire.jpg)
-
-### Build
-```
- sudo apt-get install git build-essential cmake -y
- git clone https://github.com/tunlezah/dcf77.git
- cd dcf77
- mkdir build && cd build
+```sh
+sudo apt-get install git build-essential cmake -y
+git clone https://github.com/tunlezah/dcf77.git
+cd dcf77
+mkdir build && cd build
 ```
 
-#### Rapberry Pi
-```
- cmake ../ # or cmake ../ -DPLATFORM=rpi
- make
-```
-
-#### Nvidia Jetson Series (experimental)
-Before you build txtempus on your Jetson:
-- You should install [JetsonGPIO](https://github.com/pjueon/JetsonGPIO) which is a library that enables the use of Jetson's GPIOs.
-- The system pinmux must be configured to connect the hardware PWM controlller(s) to the relevant pins. Read the L4T documentation for details on how to configure the pinmux.
-
-```
- cmake ../ -DPLATFORM=jetson
- make
+**Raspberry Pi:**
+```sh
+cmake ../          # or: cmake ../ -DPLATFORM=rpi
+make
+sudo make install  # installs /usr/bin/txtempus
 ```
 
-### Transmit!
-
+**Nvidia Jetson** (install [JetsonGPIO] first, and configure the pinmux):
+```sh
+cmake ../ -DPLATFORM=jetson
+make
 ```
- sudo ./txtempus -v -s DCF77
+
+## Run (command line)
+
+```sh
+sudo ./txtempus -v -s DCF77        # transmit current time as DCF77 (needs root)
+./txtempus -n -s WWVB              # dry-run: print the modulation envelope (no root, any machine)
+sudo ./txtempus -s DCF77 -r 10     # run for 10 minutes, then stop
 ```
-
-With `-s`, you set the type of time signal you want to transmit.
-
-There are a few options you can set. The `-r` option is useful to have the
-program run only for the few minutes it might take for a clock to synchronize.
-
-By default, the current system time is transmitted. The `-t` option allows
-different times for testing.
 
 ```
 usage: ./txtempus [options]
 Options:
         -s <service>          : Service; one of 'DCF77', 'WWVB', 'JJY40', 'JJY60', 'MSF', 'BPC'
-        -r <minutes>          : Run for limited number of minutes. (default: no limit)
+        -r <minutes>          : Run for a limited number of minutes. (default: no limit)
         -t 'YYYY-MM-DD HH:MM' : Transmit the given local time (default: now)
-        -z <minutes>          : Transmit the time offset from local (default: 0 minutes)
+        -z <minutes>          : Offset the transmitted time from local (default: 0)
         -v                    : Verbose.
-        -n                    : Dryrun, only showing modulation envelope.
+        -n                    : Dry-run: only show the modulation envelope.
         -f                    : Force run on unsupported hardware (e.g. Pi 4); carrier may be wrong.
         -h                    : This help.
 ```
 
-#### Don't connect monitor (Raspberry Pi)
-
-Don't connect a monitor to the Pi, just operate it headless.
-
-The internal oscillator used is also used for HDMI in the Rasbperry Pi; it will
-be changing its frequency if a monitor is connected and the transmission will
-fail. There should probably be a flag added to generate the frequency from
-an alternative oscillator instead; but until that is implemented, just don't
-connect a monitor and it will work. See the [very wrong frequency] bug
-for details.
-
-#### Action video - watch a watch synchronize
-
-In the video below, you can see how a watch is set with this set-up.
-After it is manually reset, it waits until it sees the end-of-minute mark
-(which does not have any amplitude modulation) and then starts to count on from
-second 59, then gathering the data that is following.
-
-An interesting observation: you see that the watch already gets into fully
-set mode after about 50 seconds, even though there is the year data
-after that. This particular watch never shows the year, so it just ignores that.
-
-<p align="center"><a href="https://youtu.be/WzZnGimRj60">
-  <img src="img/dcf77-video.jpg" width="50%"></a></p>
-
-### Showing the modulation envelope
-
-Mostly for understanding the protocol, the `-n` option allows to observe how
-the amplitude modulation of each second looks like.
-Unlike the regular transmission, don't need to be root or run on the
-Raspberry Pi to use this option.
-Underscores (`_`) show low power carrier, hashes (`#`) high power:
+The dry-run (`-n`) renders each second of the minute as ASCII — `_` is low
+(reduced) carrier, `#` is high — which is great for understanding a protocol and
+is what the tests use:
 
 ```
 $ ./txtempus -n -s wwvb
@@ -239,141 +166,163 @@ $ ./txtempus -n -s wwvb
 :00 [________##]
 :01 [__########]
 :02 [_____#####]
-:03 [__########]
-:04 [__########]
-:05 [__########]
-:06 [__########]
-:07 [_____#####]
-:08 [__########]
-:09 [________##]
-:10 [__########]
-:11 [__########]
   ... and so on for the whole minute ...
 ```
 
-### Tests
-A small golden-output test exercises every station's encoder through the `-n`
-dry-run (no root, no Pi) and compares against committed expected envelopes, so
-accidental changes to a protocol encoder are caught immediately:
+## Appliance: config, scheduler & install
 
-```
- cmake -S . -B build && cmake --build build
- test/run-golden.sh                 # check (PASS/FAIL per station)
- test/run-golden.sh --update        # regenerate expected output after an
-                                    # intentional encoder change
+For a set-and-forget device, install the appliance layer:
+
+```sh
+sudo make install            # the binary, if you haven't already
+sudo ./deploy/install.sh
 ```
 
-### Limitations
-In some of these protocols, there are additional bits that contain
-information about upcoming daylight saving times, leap seconds or difference
-to astronomic time. These are currently not set, but usually clocks are fine
-with it.
+`install.sh` is **idempotent / upgrade-safe**: it stops a running install,
+installs the files below, migrates an existing schedule, and warns about leftover
+txtempus **cron** entries (`--purge-cron` removes them). It installs:
 
-Some time stations also phase-modulate their carrier, txtempus does not.
-
-The frequency generation does **not** seem to **work** on a **Raspberry Pi4**.
-Please use older Pis for now until that is figured out (also pull requests
-accepted if you know details).
-
-### Installation
-
-#### Software
-After building, you can install the binary in some standard location
-
-```
- sudo make install
-```
-
-#### Appliance deployment: config file, scheduler & web UI
-
-This fork adds an opinionated appliance setup under [`deploy/`](deploy/) and a
-tiny LAN web UI under [`web/`](web/). After `sudo make install`:
-
-```
- sudo ./deploy/install.sh
-```
-
-This installs:
-
-- **`/etc/txtempus.conf`** — a single source of truth (station, run duration,
-  zone offset, nightly schedule, web bind/port/PIN). It is plain shell-sourceable
-  `KEY=VALUE`, read by both the scheduler and the web UI.
-- **systemd units** — `txtempus-scheduler.{service,timer}` (nightly runs, times
-  taken from `SCHEDULE_TIMES`), `txtempus-oneshot.service` (on-demand transmit),
+- **`/etc/txtempus.conf`** — the single source of truth (station, run duration,
+  zone offset, nightly schedule, web bind/port/PIN), shell-sourceable `KEY=VALUE`,
+  read by both the scheduler and the web UI.
+- **systemd units** — `txtempus-scheduler.{service,timer}` (nightly runs at the
+  times in `SCHEDULE_TIMES`), `txtempus-oneshot.service` (on-demand transmit),
   and `txtempus-web.service` (the web UI).
-- **`txtempus-scheduler.sh`** — the nightly runner (NTP sync + CPU-temperature
-  monitoring), now config-driven (the old hard-coded path is gone).
-- **`txtempus-control.sh`** — the small privileged shim the web UI calls to
-  drive systemd.
+- **`txtempus-scheduler.sh`** — the nightly runner: nudges NTP, monitors CPU
+  temperature, runs the binary for `RUN_DURATION`, records the last result.
+- **`txtempus-control.sh`** — the small privileged shim the web UI drives.
 
-Then open `http://<your-pi>:8080/` to:
+Typical setup: a Pi Zero W keeps its clock disciplined with `ntpd`/`chrony`, and
+the timer transmits for ~10 minutes a few times a night (default 01:59 / 02:59 /
+03:59) — right before a watch does its nightly receive.
 
-- pick the **station / region** (DCF77/WWVB/MSF/JJY40/JJY60),
-- **transmit on demand** (start/stop) or **edit the nightly schedule** (you see
-  the active times and the next run, so you know exactly when it will broadcast),
-- see **what time the watch will be set to** and the **DST signal** being sent
-  (e.g. CET/CEST for DCF77, GMT/BST for MSF; JJY/JST has no DST),
-- use the **watch-sync helper**: enter what your watch currently shows and it
+```sh
+systemctl list-timers txtempus-scheduler.timer    # when will it run?
+journalctl -u txtempus-scheduler.service -f        # what happened?
+sudo ./deploy/uninstall.sh                          # remove (add --purge to drop config too)
+```
+
+Prefer plain cron? A manual alternative:
+```crontab
+57 1,2  * * *  root  /usr/bin/txtempus -s DCF77 -r 10
+```
+
+## Web interface
+
+A tiny, dependency-free **Python-stdlib** sidecar (`web/txtempus-web.py`) serves
+one page plus a small JSON API on a trusted LAN. It is built for a Pi Zero W:
+~0 % idle CPU, a few MB RAM, no extra packages, no build step. It **never
+transmits itself** — it only writes the config and asks systemd to (re)start the
+binary, staying out of the real-time transmit window.
+
+After `install.sh`, open **`http://<your-pi>:8080/`** to:
+
+- **pick the station / region** (DCF77 / WWVB / MSF / JJY40 / JJY60 / BPC),
+- **transmit now / stop** for a chosen duration,
+- **edit the nightly schedule** — and see the saved times and the next run, so
+  you know exactly when it will broadcast,
+- see **what time the watch will be set to** (local for DCF77/MSF/JJY, UTC for
+  WWVB, plus any zone offset) and the **DST signal** being sent (CET/CEST,
+  GMT/BST; JJY/BPC have no DST),
+- use the **watch-sync helper**: type what your watch currently shows and it
   tells you how far it has drifted (so you can tell whether its "2 AM" check is
   really 2 AM),
-- read the **watch guide**: pick your model (e.g. Citizen Skyhawk A-T, Casio
-  Multi-Band 6) for the basics of which stations it receives, how to set it up,
-  and when it syncs. This is modular — add your own to
-  `/etc/txtempus-watches.json` (no code change), and
-- watch live status (transmitting?, NTP sync, CPU temperature).
+- read the **watch guide** for your model (see below),
+- watch **live status**: transmitting?, system time, NTP sync, CPU temperature,
+- **preview** a station's modulation (the `-n` chart), gated off while transmitting.
 
-The web UI targets a trusted LAN on a Pi Zero W: Python-stdlib only (no extra
-packages), ~0 % idle CPU, and it never transmits itself — it only writes the
-config and asks systemd to (re)start the binary, staying out of the real-time
-transmit window. See [`web.md`](web.md) for the full design and
-[`summary.md`](summary.md)/[`todo.md`](todo.md) for the project analysis.
-
-**Upgrading / uninstalling.** `deploy/install.sh` is safe to re-run: it stops a
-running install, replaces the files, migrates an existing schedule, and warns
-about any leftover txtempus **cron** entries (pass `--purge-cron` to remove
-them). To remove everything, run `sudo ./deploy/uninstall.sh` (add `--purge` to
-also delete `/etc/txtempus.conf`).
-
-#### Watch holder
-Each set-up will be different. In my case, I need my DCF77 radio
-watch getting set over night. So I built this watch holder that presents the
-watch upright while the antenna (in the wristband) is close to the
-'transmission coil' that is lying flat on the Pi. The bottom of the 3D printed
-case is filled with lead shot in epoxy to provide a stable base.
-
-The Raspberry Pi Zero W runs ntpd, PLL locking the system time to various
-stratum 1 NTP servers keeping it at atomic time within ±50ms.
-This particular watch only checks the radio twice a day at 2am and 3am, so
-there is a cron-job that runs `txtempus` around these times for a few minutes.
-
-#### Crontab (manual alternative)
-
-The appliance deploy above (systemd timer driven by `SCHEDULE_TIMES` in
-`/etc/txtempus.conf`) is the recommended way to schedule runs. If you'd rather
-use plain cron, putting the following line in your `/etc/crontab` starts
-txtempus at 1:57 and 2:57 at night for 10 minutes.
-
-```crontab
-57 1,2    * * *   root    /usr/bin/txtempus -s DCF77 -r 10
+```
+┌───────────────────────────────────────────────────────────────────────┐
+│  txtempus · time-signal transmitter                       [● TX ACTIVE] │
+├───────────────────────────────────────────────────────────────────────┤
+│  STATUS    State: Transmitting (DCF77, 77.5 kHz)                         │
+│            Will set watch to: Sun 2026-06-07 02:03 (local)              │
+│            DST signal: CEST (central European summer time)               │
+│            Next run: tomorrow 01:59 · NTP: ✔ · CPU 48.7 °C               │
+├───────────────────────────────────────────────────────────────────────┤
+│  STATION ( ) DCF77 — Germany/Europe 77.5 kHz   ( ) WWVB — USA 60 kHz ... │
+│  TRANSMIT NOW  Duration [10] min  [▶ Start] [■ Stop]                     │
+│  SCHEDULE  [x] enabled  Broadcast at [01:59,02:59,03:59]                 │
+│  WATCH GUIDE  [ Citizen Skyhawk A-T (U680) ▾ ]                           │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
-(this requires that you have installed txtempus so that it can be found
-in `/usr/bin` : `sudo make install`).
+**Security (LAN-only, deliberately light):** the UI is meant for a private
+network. It runs as root by default for simplicity; set an optional `WEB_PIN` in
+the config to gate changes. To harden, run it as a non-root user with a narrow
+sudo grant to `txtempus-control.sh` — see the comments in
+`deploy/systemd/txtempus-web.service`. Don't expose it to the open internet.
 
-watch holder             | ... with watch
--------------------------|------------------------------
-![](img/nightstand.jpg)  |![](img/nightstand-with-watch.jpg)
+## Watch guide (modular)
+
+The web UI's **watch guide** shows, for a chosen model, which stations it
+receives (checked against your current broadcast), when it auto-syncs, and the
+basic setup steps. It's **data-driven** — entries live in
+`/etc/txtempus-watches.json` (seeded with the Citizen Skyhawk A-T (U680), Casio
+Multi-Band 6, Junghans Mega, and a generic DCF77 clock). **Add your own watch by
+editing that JSON — no code change required.**
+
+## Tests
+
+A golden-output test exercises every station's encoder through the `-n` dry-run
+(no root, no Pi) and compares against committed expected envelopes, and a BPC
+self-test round-trips the BPC envelope back to time fields:
+
+```sh
+cmake -S . -B build && cmake --build build
+test/run-golden.sh            # PASS/FAIL per station
+test/run-golden.sh --update   # regenerate expected output after an intentional change
+python3 test/bpc_selftest.py  # BPC encoder round-trip (time, parity, frames, markers)
+```
+
+## Continuous integration
+
+`.github/workflows/build.yml` runs on every push/PR:
+
+- **Build & test (host):** builds, runs the golden tests and the BPC self-test.
+- **Cross-compile (32-bit ARM / Raspberry Pi):** installs `arm-linux-gnueabihf`
+  and builds, confirming the code compiles for the Pi's ARM target.
+
+## Project documentation
+
+Deeper write-ups live alongside the code:
+
+- [`summary.md`](summary.md) — architecture and what the project does.
+- [`todo.md`](todo.md) — review: what works, what's flawed, prioritised fixes.
+- [`future.md`](future.md) — prior art and a roadmap of possible additions.
+- [`web.md`](web.md) — the full design behind the web interface.
+
+## Limitations & platform notes
+
+- **Run headless on the Pi.** The internal oscillator that can be used for the
+  carrier is shared with HDMI; connecting a monitor changes it and the
+  transmission fails.
+- **Raspberry Pi 4 (BCM2711) is not supported** — frequency generation doesn't
+  work there, so txtempus now refuses to run on a Pi 4 unless you pass `-f`. Use
+  an older Pi (the Pi Zero W is the recommended target). Pull requests welcome.
+- These protocols also carry bits for DST-change *announcements*, leap seconds
+  and (on some stations) phase modulation, which are not generated. Consumer
+  clocks are generally fine without them — the current DST state *is* sent.
 
 <hr/>
 
 **tx** _common telecommunication abbreviation for 'transmit'_<br/>
 **tempus**, n _Latin. Time; period; age_
 
+## Credits
+
+- Original project and all core transmitter/protocol work:
+  **Henner Zeller** — [hzeller/txtempus]. Jetson port by Jueon Park.
+- Licensed under the **GNU General Public License** (see [`COPYING`](COPYING)).
+- This repository ([tunlezah/dcf77](https://github.com/tunlezah/dcf77)) adds the
+  appliance layer (config, systemd, installer), the web UI, the BPC station, the
+  watch guide, tests and CI.
+
 [DCF77]: https://en.wikipedia.org/wiki/DCF77
 [WWVB]: https://en.wikipedia.org/wiki/WWVB
-[BPC]: https://en.wikipedia.org/wiki/BPC_(time_signal)
-[JJY]: https://en.wikipedia.org/wiki/JJY
 [MSF]: https://en.wikipedia.org/wiki/Time_from_NPL_(MSF)
+[JJY]: https://en.wikipedia.org/wiki/JJY
+[BPC]: https://en.wikipedia.org/wiki/BPC_(time_signal)
 [NTP]: https://en.wikipedia.org/wiki/Network_Time_Protocol
-[Raspberry Pi GPIO]: https://www.raspberrypi.org/documentation/usage/gpio/
-[very wrong frequency]: https://github.com/hzeller/txtempus/issues/1
+[JetsonGPIO]: https://github.com/pjueon/JetsonGPIO
+[hzeller/txtempus]: https://github.com/hzeller/txtempus
