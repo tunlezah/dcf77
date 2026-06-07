@@ -14,13 +14,13 @@ example a European DCF77 watch used outside Europe).
 This fork packages the original command-line transmitter into a small,
 config-driven **appliance** for a Raspberry Pi Zero W on a home LAN:
 
-- a single config file (`/etc/txtempus.conf`),
+- a single config file (`/etc/txtempus.conf`) as the only source of truth,
 - a `systemd` scheduler that broadcasts for a few minutes at night,
-- a tiny **web UI** to pick the station/region, transmit on demand, edit the
-  schedule, watch a live transmit status, see the time/DST being sent, and read
-  a per-model **watch guide**,
-- an idempotent installer/uninstaller, encoder **tests**, and **CI** that
-  cross-compiles for ARM.
+- a tiny, **live web UI** to pick the station/region, transmit on demand, edit
+  the schedule, watch an auto-refreshing transmit status, see the time/DST being
+  sent, and read a per-model **watch guide**,
+- an idempotent, upgrade-safe installer/uninstaller, encoder **tests**, and
+  **CI** that cross-compiles for ARM.
 
 > ⚠️ **Before you transmit, make sure you follow your local laws on radio
 > transmissions.** The coupling here is intentionally very weak (a few cm range)
@@ -57,14 +57,16 @@ transmitter and protocol work is his (see [Credits](#credits)).
 - **Five longwave time stations across four regions** — DCF77, WWVB, MSF, JJY
   (40/60 kHz) and an experimental BPC, each a self-contained encoder.
 - **Accurate carrier synthesis** straight off the Pi's general-purpose clock,
-  with second-aligned amplitude modulation under a real-time scheduler.
+  with second-aligned amplitude modulation under a real-time scheduler
+  (`SCHED_FIFO`, with `mlockall` to keep the modulation loop jitter-free).
 - **Root-free dry-run** (`-n`) that prints the modulation envelope as ASCII —
   great for understanding a protocol and the basis of the test suite.
 - **Set-and-forget appliance layer:** one config file, a `systemd` nightly
   scheduler with NTP discipline and CPU-temperature monitoring, plus an
   idempotent, upgrade-safe installer.
-- **Live, low-power web UI** for a Pi Zero W — pick the station, transmit on
-  demand, edit the schedule, and watch an auto-refreshing transmit status.
+- **Live, low-power web UI** for a Pi Zero W — an auto-refreshing transmit
+  status (with a pulsing "TX ACTIVE" indicator and live countdowns), station
+  picker, on-demand transmit/stop, schedule editor and watch guide.
 - **Modular, data-driven watch guide** you extend by editing a JSON file.
 - **Tests and CI** — golden encoder regressions, a BPC self-test, host build and
   a 32-bit ARM cross-compile on every push.
@@ -101,10 +103,10 @@ for the minute marker, then decodes. Most stations transmit the data for the
 *upcoming* minute and switch over on the minute boundary.
 
 txtempus reproduces this by synthesising the carrier on the Pi's general-purpose
-clock output and toggling a second GPIO to attenuate it on schedule, aligned to
-real second boundaries under a real-time scheduler (`SCHED_FIFO`). Keep the Pi's
-clock accurate with `ntpd`/`chrony` (the included scheduler nudges NTP before
-each run).
+clock output (GPIO4) and toggling a second GPIO (GPIO17) to attenuate it on
+schedule, aligned to real second boundaries under a real-time scheduler
+(`SCHED_FIFO`, priority 99). Keep the Pi's clock accurate with `ntpd`/`chrony`
+(the included scheduler nudges NTP before each run).
 
 ## Hardware
 
@@ -168,13 +170,17 @@ The dry-run (`-n`) renders each second of the minute as ASCII — `_` is low
 is what the tests use:
 
 ```
-$ ./txtempus -n -s wwvb
+$ ./txtempus -n -s WWVB
 2018-08-17 13:22:00 -> tx-modulation
 :00 [________##]
 :01 [__########]
 :02 [_____#####]
   ... and so on for the whole minute ...
 ```
+
+Running as root (or otherwise privileged) lets txtempus raise itself to
+real-time priority and lock its memory; without that it still runs but warns that
+timing may be less accurate.
 
 ## Appliance: config, scheduler & install
 
@@ -195,14 +201,16 @@ installs:
   `KEY=VALUE`, read by both the scheduler and the web UI. An existing config is
   **never overwritten**, so your settings survive upgrades.
 - **systemd units** — `txtempus-scheduler.{service,timer}` (nightly runs at the
-  times in `SCHEDULE_TIMES`), `txtempus-oneshot.service` (on-demand transmit,
-  `Type=simple` so it reports "transmitting now" honestly and stops cleanly),
-  and `txtempus-web.service` (the web UI, run at idle priority so it never
-  preempts the real-time transmit loop).
+  times in `SCHEDULE_TIMES`, via a generated drop-in), `txtempus-oneshot.service`
+  (on-demand transmit, `Type=simple` so it reports "transmitting now" honestly
+  and stops cleanly), and `txtempus-web.service` (the web UI, run at idle
+  priority so it never preempts the real-time transmit loop).
 - **`txtempus-scheduler.sh`** — the nightly runner: nudges NTP, monitors CPU
   temperature, runs the binary for `RUN_DURATION`, records the last result.
 - **`txtempus-control.sh`** — the small privileged shim the web UI drives (the
   only state-changing surface: start/stop and schedule management).
+- **`/etc/txtempus-watches.json`** — the modular watch-guide database (kept if
+  it already exists, so your additions survive upgrades) and a logrotate rule.
 
 Typical setup: a Pi Zero W keeps its clock disciplined with `ntpd`/`chrony`, and
 the timer transmits for ~10 minutes a few times a night (default 01:59 / 02:59 /
@@ -214,7 +222,7 @@ journalctl -u txtempus-scheduler.service -f        # what happened?
 sudo ./deploy/uninstall.sh                          # remove (add --purge to drop config too)
 ```
 
-Prefer plain cron? A manual alternative:
+Prefer plain cron? A manual alternative (without the appliance layer):
 
 ```crontab
 57 1,2  * * *  root  /usr/bin/txtempus -s DCF77 -r 10
@@ -252,7 +260,7 @@ if you want an immediate, forced update.
 
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
-│  txtempus · time-signal transmitter                    [● TX ACTIVE ⟳] │
+│  txtempus · time-signal transmitter                    [● TX ACTIVE]  ⟳ │
 ├───────────────────────────────────────────────────────────────────────┤
 │  STATUS    State: Transmitting (DCF77, 77.5 kHz) · ends in 7m 41s        │
 │            Will set watch to: Sun 2026-06-07 02:03 (local)              │
@@ -284,35 +292,38 @@ The rest of the page lets you:
 
 **Security (LAN-only, deliberately light):** the UI is meant for a private
 network. It runs as root by default for simplicity; set an optional `WEB_PIN` in
-the config to gate changes. To harden, run it as a non-root user with a narrow
-sudo grant to `txtempus-control.sh` — see the comments in
-`deploy/systemd/txtempus-web.service`. Don't expose it to the open internet.
+the config to gate changes (a speed-bump, not a real security boundary). To
+harden, run it as a non-root user with a narrow sudo grant to
+`txtempus-control.sh` — see the comments in `deploy/systemd/txtempus-web.service`.
+Don't expose it to the open internet.
 
 ## Watch guide (modular)
 
 The web UI's **watch guide** shows, for a chosen model, which stations it
 receives (checked against your current broadcast), when it auto-syncs, and the
 basic setup steps. It's **data-driven** — entries live in
-`/etc/txtempus-watches.json` (seeded with the Citizen Skyhawk A-T (U680), Casio
-Multi-Band 6, Junghans Mega, and a generic DCF77 clock). **Add your own watch by
-editing that JSON — no code change required.**
+`/etc/txtempus-watches.json` (seeded with the Citizen Skyhawk A-T (cal. U680),
+Casio Multi-Band 6, Junghans Mega, and a generic DCF77 clock). **Add your own
+watch by editing that JSON — no code change required.**
 
 ## Tests
 
 A golden-output test exercises every station's encoder through the `-n` dry-run
-(no root, no Pi) and compares against committed expected envelopes, and a BPC
-self-test round-trips the BPC envelope back to time fields:
+(no root, no Pi) at a fixed time/timezone and compares against committed expected
+envelopes, and a BPC self-test round-trips the BPC envelope back to time fields:
 
 ```sh
 cmake -S . -B build && cmake --build build
-test/run-golden.sh            # PASS/FAIL per station
-test/run-golden.sh --update   # regenerate expected output after an intentional change
-python3 test/bpc_selftest.py  # BPC encoder round-trip (time, parity, frames, markers)
+test/run-golden.sh                  # PASS/FAIL per station (default build/txtempus)
+test/run-golden.sh --update         # regenerate expected output after an intentional change
+python3 test/bpc_selftest.py        # BPC encoder round-trip (time, parity, frames, markers)
 ```
 
-The BPC self-test verifies the encoder is internally consistent (bit-packing,
-framing, parity, markers, pulse widths); it does **not** prove conformance to the
-real BPC broadcast format.
+Both scripts accept an explicit binary path (e.g.
+`test/run-golden.sh build/txtempus`), which is how CI invokes them. The BPC
+self-test verifies the encoder is internally consistent (bit-packing, framing,
+parity, markers, pulse widths); it does **not** prove conformance to the real BPC
+broadcast format.
 
 ## Continuous integration
 
@@ -322,8 +333,9 @@ push/PR:
 - **Build & test (host):** builds, then runs the golden encoder tests and the
   BPC self-test.
 - **Cross-compile (32-bit ARM / Raspberry Pi):** installs
-  `g++-arm-linux-gnueabihf` and builds, confirming the code compiles for the
-  Pi's ARM target.
+  `g++-arm-linux-gnueabihf`, builds with the ARM cross toolchain, and verifies
+  the result really is an ARM binary — confirming the code compiles for the Pi's
+  target.
 
 ## Project documentation
 
