@@ -94,6 +94,15 @@ else
     fi
 fi
 
+# Watch-guide database (preserve any watches the user added).
+WATCHES_DST="/etc/txtempus-watches.json"
+if [[ -e "$WATCHES_DST" ]]; then
+    echo "Keeping existing $WATCHES_DST (your watch additions are preserved)."
+else
+    echo "Installing watch-guide database to $WATCHES_DST"
+    install -m 0644 "$REPO_DIR/web/watches.json" "$WATCHES_DST"
+fi
+
 # --- 2. Helper scripts --------------------------------------------------------
 echo "Installing helper scripts to $BIN_DIR"
 install -m 0755 "$SCRIPT_DIR/txtempus-scheduler.sh" "$BIN_DIR/txtempus-scheduler.sh"

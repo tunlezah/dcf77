@@ -61,6 +61,20 @@ If you're in/or want to display a different time-zone, issue
 [#17](https://github.com/hzeller/txtempus/issues/17) might be of interest to
 you.
 
+#### BPC (experimental)
+The [BPC] (China) signal is a 68.5kHz carrier from the National Time Service
+Center. Unlike the others it uses **quaternary** pulse-width modulation: each
+second the carrier is reduced (to ~10%) for 100/200/300/400 ms, encoding a
+2-bit symbol, and a 20-second frame is sent three times per minute. Choose it
+with `-s BPC`.
+
+**This one is marked experimental.** The carrier and modulation mechanism are
+implemented and visible with `-n`, but BPC's exact field/bit layout is
+reverse-engineered (the official format isn't openly published) and the mapping
+in `src/bpc-source.cc` is a *tentative best-effort that has not yet been verified
+against a real receiver*. If you have a BPC-capable clock (e.g. a Citizen
+Skyhawk set to a Chinese city, or a Casio Multi-Band 6), please test and report.
+
 ### Minimal External Hardware
 #### Raspberry Pi
 The external hardware is simple: we use the frequency output on one pin and
@@ -176,7 +190,7 @@ different times for testing.
 ```
 usage: ./txtempus [options]
 Options:
-        -s <service>          : Service; one of 'DCF77', 'WWVB', 'JJY40', 'JJY60', 'MSF'
+        -s <service>          : Service; one of 'DCF77', 'WWVB', 'JJY40', 'JJY60', 'MSF', 'BPC'
         -r <minutes>          : Run for limited number of minutes. (default: no limit)
         -t 'YYYY-MM-DD HH:MM' : Transmit the given local time (default: now)
         -z <minutes>          : Transmit the time offset from local (default: 0 minutes)
@@ -237,6 +251,18 @@ $ ./txtempus -n -s wwvb
   ... and so on for the whole minute ...
 ```
 
+### Tests
+A small golden-output test exercises every station's encoder through the `-n`
+dry-run (no root, no Pi) and compares against committed expected envelopes, so
+accidental changes to a protocol encoder are caught immediately:
+
+```
+ cmake -S . -B build && cmake --build build
+ test/run-golden.sh                 # check (PASS/FAIL per station)
+ test/run-golden.sh --update        # regenerate expected output after an
+                                    # intentional encoder change
+```
+
 ### Limitations
 In some of these protocols, there are additional bits that contain
 information about upcoming daylight saving times, leap seconds or difference
@@ -289,7 +315,11 @@ Then open `http://<your-pi>:8080/` to:
   (e.g. CET/CEST for DCF77, GMT/BST for MSF; JJY/JST has no DST),
 - use the **watch-sync helper**: enter what your watch currently shows and it
   tells you how far it has drifted (so you can tell whether its "2 AM" check is
-  really 2 AM), and
+  really 2 AM),
+- read the **watch guide**: pick your model (e.g. Citizen Skyhawk A-T, Casio
+  Multi-Band 6) for the basics of which stations it receives, how to set it up,
+  and when it syncs. This is modular — add your own to
+  `/etc/txtempus-watches.json` (no code change), and
 - watch live status (transmitting?, NTP sync, CPU temperature).
 
 The web UI targets a trusted LAN on a Pi Zero W: Python-stdlib only (no extra
@@ -341,6 +371,7 @@ watch holder             | ... with watch
 
 [DCF77]: https://en.wikipedia.org/wiki/DCF77
 [WWVB]: https://en.wikipedia.org/wiki/WWVB
+[BPC]: https://en.wikipedia.org/wiki/BPC_(time_signal)
 [JJY]: https://en.wikipedia.org/wiki/JJY
 [MSF]: https://en.wikipedia.org/wiki/Time_from_NPL_(MSF)
 [NTP]: https://en.wikipedia.org/wiki/Network_Time_Protocol

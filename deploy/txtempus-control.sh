@@ -32,7 +32,7 @@ ONESHOT_ENV="/run/txtempus/oneshot.env"
 DROPIN_DIR="/etc/systemd/system/${TIMER_UNIT}.d"
 DROPIN_FILE="${DROPIN_DIR}/schedule.conf"
 
-VALID_STATIONS="DCF77 WWVB MSF JJY40 JJY60"
+VALID_STATIONS="DCF77 WWVB MSF JJY40 JJY60 BPC"
 
 die() { echo "error: $*" >&2; exit 1; }
 

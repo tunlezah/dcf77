@@ -109,4 +109,20 @@ private:
   uint64_t a_bits_, b_bits_;
 };
 
+// BPC (China, 68.5 kHz). EXPERIMENTAL: quaternary pulse-width AM, 20-second
+// frame transmitted three times per minute. The modulation mechanism is
+// implemented; the exact per-field bit layout is reverse-engineered/tentative
+// (see src/bpc-source.cc) and should be verified against the spec / a real
+// BPC receiver before relying on it.
+class BPCTimeSignalSource : public TimeSignalSource {
+public:
+  int GetCarrierFrequencyHz() const final { return 68500; }
+  void PrepareMinute(time_t t) final;
+  SecondModulation GetModulationForSecond(int second) final;
+
+private:
+  // One quaternary symbol (0..3) per second of the minute; 0xFF = frame marker.
+  uint8_t symbols_[60];
+};
+
 #endif // TIMETRANSMITTER_CLOCKGEN_H

@@ -113,6 +113,8 @@ std::unique_ptr<TimeSignalSource> CreateTimeSourceFromName(const char *n) {
     return std::make_unique<JJY60TimeSignalSource>();
   if (strcasecmp(n, "MSF") == 0)
     return std::make_unique<MSFTimeSignalSource>();
+  if (strcasecmp(n, "BPC") == 0)
+    return std::make_unique<BPCTimeSignalSource>();
   return nullptr;
 }
 
@@ -120,7 +122,7 @@ int usage(const char *msg, const char *progname) {
   fprintf(stderr, "%susage: %s [options]\n"
           "Options:\n"
           "\t-s <service>          : Service; one of "
-          "'DCF77', 'WWVB', 'JJY40', 'JJY60', 'MSF'\n"
+          "'DCF77', 'WWVB', 'JJY40', 'JJY60', 'MSF', 'BPC'\n"
           "\t-r <minutes>          : Run for limited number of minutes. "
           "(default: no limit)\n"  // in truth: a couple thousand years...
           "\t-t 'YYYY-MM-DD HH:MM' : Transmit the given local time "

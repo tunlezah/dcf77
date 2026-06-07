@@ -28,6 +28,10 @@ from urllib.parse import urlparse, parse_qs
 CONF_PATH = os.environ.get("TXTEMPUS_CONF", "/etc/txtempus.conf")
 CONTROL = os.environ.get("TXTEMPUS_CONTROL", "/usr/local/bin/txtempus-control.sh")
 LAST_RUN_PATH = os.environ.get("TXTEMPUS_LAST_RUN", "/run/txtempus/last-run")
+# Modular watch-guide database (user-editable). Falls back to the copy bundled
+# next to this script when the installed one isn't present (e.g. during dev).
+WATCHES_PATH = os.environ.get("TXTEMPUS_WATCHES", "/etc/txtempus-watches.json")
+_BUNDLED_WATCHES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watches.json")
 
 ONESHOT_UNIT = "txtempus-oneshot.service"
 SCHED_UNIT = "txtempus-scheduler.service"
@@ -40,6 +44,7 @@ STATIONS = {
     "MSF":   {"region": "United Kingdom",   "carrier_hz": 60000},
     "JJY40": {"region": "Japan",            "carrier_hz": 40000},
     "JJY60": {"region": "Japan",            "carrier_hz": 60000},
+    "BPC":   {"region": "China",            "carrier_hz": 68500, "experimental": True},
 }
 TIME_RE = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
 
@@ -209,6 +214,8 @@ def transmitted_info(station, zone_offset):
     elif station == "WWVB":
         dst_active, dst_text = isdst, ("DST flag set" if isdst
                                        else "no DST flag (standard time)")
+    elif station == "BPC":
+        dst_active, dst_text = None, "CST (China has no daylight saving)"
     else:  # JJY40 / JJY60 -- Japan has no DST
         dst_active, dst_text = None, "JST (Japan has no daylight saving)"
     return {
@@ -251,6 +258,19 @@ def build_status():
         "cpu_temp_c": cpu_temp_c(),
         "stations": STATIONS,
     }
+
+
+def load_watches():
+    """Load the modular watch-guide list; tolerate missing/!malformed files."""
+    for path in (WATCHES_PATH, _BUNDLED_WATCHES):
+        try:
+            with open(path) as f:
+                return json.load(f).get("watches", [])
+        except (FileNotFoundError, OSError):
+            continue
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return []
 
 
 def get_config():
@@ -410,6 +430,8 @@ class Handler(BaseHTTPRequestHandler):
                 "times": c["schedule_times"],
                 "duration": c["run_duration"],
             })
+        if path == "/api/watches":
+            return self._send_json({"watches": load_watches()})
         if path == "/api/preview":
             q = parse_qs(urlparse(self.path).query)
             station = (q.get("station") or [""])[0]
@@ -554,6 +576,20 @@ PAGE = r"""<!DOCTYPE html>
     <div id="drift-out" style="margin-top:10px"></div>
   </section>
 
+  <section class="card">
+    <h2>Watch guide</h2>
+    <div class="row">
+      Your watch
+      <select id="watch-select" onchange="renderWatch()" style="flex:1;min-width:200px">
+        <option value="">— choose your model —</option>
+      </select>
+    </div>
+    <div id="watch-guide" style="margin-top:10px"></div>
+    <div class="muted" style="font-size:12px;margin-top:8px">
+      Don't see yours? Add it to <code>/etc/txtempus-watches.json</code> — no code change needed.
+    </div>
+  </section>
+
   <details class="card">
     <summary>Advanced</summary>
     <div class="row" style="margin-top:12px">
@@ -598,8 +634,9 @@ function renderStations(stations, current) {
   for (const [name, meta] of Object.entries(stations)) {
     const id = "stn-"+name;
     const lab = document.createElement("label"); lab.className = "station";
+    const exp = meta.experimental ? ` <span style="color:var(--warn);font-size:11px">experimental</span>` : "";
     lab.innerHTML = `<input type="radio" name="station" id="${id}" value="${name}" ${name===current?"checked":""}>
-                     <b>${name}</b> <span>${meta.region}</span>
+                     <b>${name}</b> <span>${meta.region}</span>${exp}
                      <span class="freq">${(meta.carrier_hz/1000).toFixed(meta.carrier_hz%1000?1:0)} kHz</span>`;
     box.appendChild(lab);
   }
@@ -696,7 +733,44 @@ async function preview(){
   } catch(e){ toast("preview failed"); }
 }
 
+async function loadWatches(){
+  try { window.watches = (await (await fetch("/api/watches")).json()).watches || []; }
+  catch(e){ window.watches = []; }
+  const sel = $("watch-select");
+  window.watches.forEach((w, i) => {
+    const o = document.createElement("option");
+    o.value = i; o.textContent = `${w.brand} ${w.model}`;
+    sel.appendChild(o);
+  });
+}
+function renderWatch(){
+  const idx = $("watch-select").value, out = $("watch-guide");
+  if (idx === "" || !window.watches){ out.innerHTML = ""; return; }
+  const w = window.watches[idx];
+  const cur = selectedStation();
+  const chips = w.stations.map(s => {
+    const ok = s === cur;
+    return `<span style="display:inline-block;padding:1px 7px;margin:0 4px 4px 0;border-radius:999px;`
+      + `background:${ok?'rgba(63,185,80,.18)':'#2a333d'};color:${ok?'var(--ok)':'var(--fg)'}">${s}</span>`;
+  }).join("");
+  const supported = w.stations.includes(cur);
+  let html = `<div style="margin-bottom:6px">Receives: ${chips}</div>`;
+  html += `<div class="muted" style="margin-bottom:6px">Your current broadcast <b>${cur}</b>: `
+    + (supported ? `<span style="color:var(--ok)">supported &#10003;</span>`
+                 : `<span style="color:var(--bad)">not received by this watch — pick a station it supports</span>`)
+    + `</div>`;
+  if (w.sync_times && w.sync_times.length)
+    html += `<div class="muted" style="margin-bottom:6px">Typical auto-sync (watch's own time): ${w.sync_times.join(", ")}</div>`;
+  if (w.setup && w.setup.length)
+    html += "<ol style='margin:8px 0 0 18px;padding:0'>" + w.setup.map(s => `<li style="margin-bottom:4px">${s}</li>`).join("") + "</ol>";
+  if (w.notes) html += `<div class="muted" style="margin-top:8px">${w.notes}</div>`;
+  out.innerHTML = html;
+}
+// Re-render the watch guide when the chosen station changes (updates the ✓/✗).
+$("stations").addEventListener("change", () => { if ($("watch-select").value !== "") renderWatch(); });
+
 loadConfig().then(refresh);
+loadWatches();
 </script>
 </body>
 </html>

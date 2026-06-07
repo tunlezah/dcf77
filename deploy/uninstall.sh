@@ -55,10 +55,10 @@ rm -rf /run/txtempus /run/txtempus.pid /run/txtempus-temp-monitor.pid 2>/dev/nul
 [ -d /run/systemd/system ] && systemctl daemon-reload 2>/dev/null || true
 
 if [[ $PURGE -eq 1 ]]; then
-    rm -f "$CONF"
-    echo "Removed $CONF"
+    rm -f "$CONF" /etc/txtempus-watches.json
+    echo "Removed $CONF and /etc/txtempus-watches.json"
 else
-    echo "Kept $CONF (use --purge to remove it)."
+    echo "Kept $CONF and /etc/txtempus-watches.json (use --purge to remove)."
 fi
 
 echo "Note: /usr/bin/txtempus (from 'make install') was left in place."

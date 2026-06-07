@@ -1,0 +1,55 @@
+{
+  "_comment": "Modular watch-guide database for the txtempus web UI. To add a watch, copy an entry and edit it -- no code change needed. Installed to /etc/txtempus-watches.json (which you can edit on the device). Fields: brand, model, stations (which signals the watch can receive, using txtempus names DCF77/WWVB/MSF/JJY40/JJY60/BPC), sync_times (when it auto-receives, in the WATCH's own local time, HH:MM), setup (short how-to steps), notes.",
+  "watches": [
+    {
+      "brand": "Citizen",
+      "model": "Skyhawk A-T (cal. U680)",
+      "stations": ["DCF77", "WWVB", "JJY40", "JJY60", "BPC"],
+      "sync_times": ["02:00", "03:00", "04:00"],
+      "setup": [
+        "Set the watch's home city to a city in the region of the station you are broadcasting (the U680 uses the home city to choose which signal to seek: EUR=DCF77, USA=WWVB, JPN=JJY, CHN=BPC). It does not receive MSF.",
+        "Make sure the time-zone / DST setting on the watch matches what txtempus is sending (see the 'Will set watch to' line above).",
+        "Leave automatic reception ON; the watch tries to receive overnight (around 2-4 AM watch time).",
+        "To force a reception now: pull the crown to the receive position and trigger a manual receive per the manual, then rest the watch on/next to the antenna loop for a few minutes."
+      ],
+      "notes": "Multi-band Eco-Drive. The R (receive) hand shows L (received) or N/H (not received). Keep the watch within a few cm of the coil; too close can also fail."
+    },
+    {
+      "brand": "Casio",
+      "model": "G-Shock / Wave Ceptor (Multi-Band 6)",
+      "stations": ["DCF77", "WWVB", "MSF", "JJY40", "JJY60", "BPC"],
+      "sync_times": ["00:00", "02:00", "03:00", "04:00"],
+      "setup": [
+        "Set the Home City to a city served by the station you are broadcasting (this selects which signal it listens for).",
+        "Enable Auto Receive; the watch attempts reception several times overnight.",
+        "For an immediate sync, hold the dedicated receive button (often the lower-left) until it starts receiving, with the 12 o'clock side near the coil.",
+        "Check the DST (summer time) setting is Auto or matches the broadcast."
+      ],
+      "notes": "Multi-Band 6 supports all five world stations plus BPC. Signal level shows on the dial after a manual receive."
+    },
+    {
+      "brand": "Junghans",
+      "model": "Mega (DCF77)",
+      "stations": ["DCF77"],
+      "sync_times": ["02:00", "03:00"],
+      "setup": [
+        "DCF77 only -- broadcast DCF77 (77.5 kHz).",
+        "Most Mega models receive automatically at night; place the watch near the coil overnight.",
+        "If the model has a manual send/receive function, trigger it and hold the watch by the coil."
+      ],
+      "notes": "The original watch this project was built for. No band/timezone selection -- it just decodes DCF77."
+    },
+    {
+      "brand": "Generic",
+      "model": "DCF77 wall/desk clock",
+      "stations": ["DCF77"],
+      "sync_times": ["01:00", "02:00", "03:00"],
+      "setup": [
+        "Broadcast DCF77 (77.5 kHz).",
+        "Insert the battery near the coil, or leave the clock beside the coil overnight -- many clocks attempt reception right after power-on and hourly at night.",
+        "Make sure the clock's manual time-zone offset (if any) matches the broadcast."
+      ],
+      "notes": "Most inexpensive 'radio controlled' clocks sold in Europe are DCF77."
+    }
+  ]
+}
