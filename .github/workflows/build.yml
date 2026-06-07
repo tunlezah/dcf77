@@ -1,0 +1,43 @@
+name: build
+
+on:
+  push:
+    branches: [ main, 'claude/**' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  host-build-test:
+    name: Build & test (host)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tool versions
+        run: cmake --version && c++ --version && python3 --version
+      - name: Configure
+        run: cmake -S . -B build
+      - name: Build
+        run: cmake --build build -j2
+      - name: Golden encoder tests
+        run: ./test/run-golden.sh build/txtempus
+      - name: BPC encoder self-test
+        run: python3 test/bpc_selftest.py build/txtempus
+
+  arm-cross-build:
+    name: Cross-compile (32-bit ARM / Raspberry Pi)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ARM cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-arm-linux-gnueabihf
+      - name: Configure (ARM)
+        run: >
+          cmake -S . -B build-arm
+          -DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc
+          -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++
+      - name: Build (ARM)
+        run: cmake --build build-arm -j2
+      - name: Verify it is an ARM binary
+        run: file build-arm/txtempus
