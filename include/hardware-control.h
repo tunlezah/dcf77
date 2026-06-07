@@ -38,8 +38,9 @@ class HardwareControl {
   ~HardwareControl();
 
   // Initialize before use. Returns 'true' if successful, 'false' otherwise
-  // (e.g. due to a permission problem).
-  bool Init();
+  // (e.g. due to a permission problem, or unsupported hardware unless
+  // 'allow_unsupported' is set).
+  bool Init(bool allow_unsupported = false);
 
   // Set frequency output as close as possible to the requested one.
   // Returns the approximate frequency it could configure or -1 if that was

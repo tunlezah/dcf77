@@ -19,6 +19,7 @@
 // as DCF77, WWVB, ... to be run on the Raspberry Pi.
 // Make sure to stay within the regulation limits of HF transmissions!
 
+#include <errno.h>
 #include <getopt.h>
 #include <limits.h>
 #include <sched.h>
@@ -26,6 +27,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <strings.h>
 #include <string.h>
@@ -128,6 +130,8 @@ int usage(const char *msg, const char *progname) {
           "\t-v                    : Verbose.\n"
           "\t-n                    : Dryrun, only showing modulation "
           "envelope.\n"
+          "\t-f                    : Force run on unsupported hardware "
+          "(e.g. Pi 4); carrier may be wrong.\n"
           "\t-h                    : This help.\n",
           msg, progname);
   return 1;
@@ -141,11 +145,15 @@ int main(int argc, char *argv[]) {
   time_t chosen_time = now;
   int zone_offset = 0;
   int ttl = INT_MAX;
+  bool allow_unsupported = false;
   int opt;
-  while ((opt = getopt(argc, argv, "t:z:r:vs:hn")) != -1) {
+  while ((opt = getopt(argc, argv, "t:z:r:vs:hnf")) != -1) {
     switch (opt) {
     case 'v':
       verbose = true;
+      break;
+    case 'f':
+      allow_unsupported = true;
       break;
     case 't':
       chosen_time = ParseLocalTime(optarg);
@@ -177,7 +185,7 @@ int main(int argc, char *argv[]) {
     return usage("Please choose a service name with -s option\n", argv[0]);
 
   HardwareControl hw{};
-  if (!dryrun && !hw.Init()) {
+  if (!dryrun && !hw.Init(allow_unsupported)) {
     fprintf(stderr, "Initialization failed\n");
     return 1;
   }
@@ -185,10 +193,22 @@ int main(int argc, char *argv[]) {
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
 
-  // Make sure the kernel knows that we're serious about accuracy of sleeps.
-  struct sched_param sp;
-  sp.sched_priority = 99;
-  sched_setscheduler(0, SCHED_FIFO, &sp);
+  if (!dryrun) {
+    // Make sure the kernel knows that we're serious about accuracy of sleeps,
+    // and lock our memory so a page fault can't stall the time-critical
+    // modulation loop (the standard companion to SCHED_FIFO).
+    struct sched_param sp = {};
+    sp.sched_priority = 99;
+    if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) {
+      fprintf(stderr, "Warning: could not set real-time priority (%s); "
+              "timing may be less accurate. Run as root for best results.\n",
+              strerror(errno));
+    }
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
+      fprintf(stderr, "Warning: mlockall() failed (%s); a page fault during "
+              "transmission could cause timing jitter.\n", strerror(errno));
+    }
+  }
 
   StartCarrier(&hw, time_source->GetCarrierFrequencyHz());
 

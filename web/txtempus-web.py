@@ -20,6 +20,7 @@ import os
 import re
 import shlex
 import subprocess
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -191,9 +192,40 @@ def transmitting_now():
     return rc == 0 and out.strip() != ""
 
 
+def transmitted_info(station, zone_offset):
+    """What time the watch will be set to + the DST signalling, mirroring what
+    the binary encodes: local time for DCF77/MSF/JJY, UTC for WWVB; DST derived
+    from the Pi's local timezone (same as the C++ localtime_r tm_isdst)."""
+    effective = time.time() + zone_offset * 60
+    basis = "UTC" if station == "WWVB" else "local"
+    ts = time.gmtime(effective) if basis == "UTC" else time.localtime(effective)
+    isdst = time.localtime(effective).tm_isdst > 0
+    if station == "DCF77":
+        dst_active, dst_text = isdst, ("CEST (central European summer time)" if isdst
+                                       else "CET (central European time)")
+    elif station == "MSF":
+        dst_active, dst_text = isdst, ("BST (British summer time)" if isdst
+                                       else "GMT (Greenwich mean time)")
+    elif station == "WWVB":
+        dst_active, dst_text = isdst, ("DST flag set" if isdst
+                                       else "no DST flag (standard time)")
+    else:  # JJY40 / JJY60 -- Japan has no DST
+        dst_active, dst_text = None, "JST (Japan has no daylight saving)"
+    return {
+        "time": time.strftime("%H:%M", ts),
+        "date": time.strftime("%Y-%m-%d", ts),
+        "weekday": time.strftime("%a", ts),
+        "basis": basis,
+        "zone_offset_min": zone_offset,
+        "dst_active": dst_active,
+        "dst_text": dst_text,
+    }
+
+
 def build_status():
     conf = read_conf()
     station = conf.get("STATION", "DCF77")
+    zone = int(conf["ZONE_OFFSET"]) if conf.get("ZONE_OFFSET", "0").lstrip("-").isdigit() else 0
     tx = transmitting_now()
     active_unit = ONESHOT_UNIT if is_active(ONESHOT_UNIT) else (
         SCHED_UNIT if is_active(SCHED_UNIT) else None)
@@ -210,6 +242,9 @@ def build_status():
         "next_scheduled": sc_value(TIMER_UNIT, "NextElapseUSecRealtime") or None,
         "schedule_enabled": conf.get("SCHEDULE_ENABLED", "true").lower() == "true",
         "schedule_times": clean_times(conf.get("SCHEDULE_TIMES", "")) or [],
+        "timer_enabled": sc_value(TIMER_UNIT, "UnitFileState") == "enabled",
+        "timer_active": is_active(TIMER_UNIT),
+        "transmitted": transmitted_info(station, zone),
         "last_run": read_last_run(),
         "system_time": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
         "ntp_synchronized": ntp,
@@ -460,6 +495,8 @@ PAGE = r"""<!DOCTYPE html>
     <h2>Status <button class="secondary" style="float:right;padding:2px 8px" onclick="refresh()">&#x21bb;</button></h2>
     <div class="grid">
       <div class="k">State</div><div id="st-state">…</div>
+      <div class="k">Will set watch to</div><div id="st-settime">…</div>
+      <div class="k">DST signal</div><div id="st-dst">…</div>
       <div class="k">Next run</div><div id="st-next">…</div>
       <div class="k">Last run</div><div id="st-last">…</div>
       <div class="k">System time</div><div id="st-time">…</div>
@@ -488,14 +525,33 @@ PAGE = r"""<!DOCTYPE html>
 
   <section class="card">
     <h2>Schedule</h2>
+    <div id="sched-summary" class="muted" style="font-size:13px;margin-bottom:10px">…</div>
     <div class="row">
       <label><input id="sched-on" type="checkbox"> enabled</label>
     </div>
     <div class="row" style="margin-top:8px">
-      Nightly times <input id="sched-times" type="text" value="01:59,02:59,03:59" style="flex:1;min-width:180px">
+      Broadcast at <input id="sched-times" type="text" value="01:59,02:59,03:59" style="flex:1;min-width:180px">
     </div>
-    <div class="muted" style="font-size:12px;margin-top:4px">Comma-separated HH:MM (24h). Uses the duration above.</div>
+    <div class="muted" style="font-size:12px;margin-top:4px">
+      Comma-separated HH:MM (24h), Pi local time. These are when the Pi <i>starts</i>
+      broadcasting (for the duration above) — set them a minute or two before your
+      watch's own check time so the window brackets it. Default brackets 2 AM &amp; 3 AM.
+    </div>
     <div class="row end"><button onclick="saveSchedule()">Save schedule</button></div>
+  </section>
+
+  <section class="card">
+    <h2>Watch sync helper</h2>
+    <div class="muted" style="font-size:13px;margin-bottom:8px">
+      A radio watch listens at <i>its own</i> clock's time (often 2 AM) — and that
+      drifts when it can't receive, so its "2 AM" may not be the real 2 AM. Enter
+      what your watch shows right now to see how far off it is.
+    </div>
+    <div class="row">
+      My watch shows <input id="watch-time" type="time" step="60">
+      <button class="secondary" onclick="calcDrift()">Check drift</button>
+    </div>
+    <div id="drift-out" style="margin-top:10px"></div>
   </section>
 
   <details class="card">
@@ -552,6 +608,7 @@ function selectedStation(){ const el = document.querySelector("input[name=statio
 
 async function refresh() {
   let s; try { s = await (await fetch("/api/status")).json(); } catch(e){ return; }
+  window.lastStatus = s;
   transmitting = s.transmitting;
   $("txpill").textContent = transmitting ? "● TX ACTIVE" : "idle";
   $("txpill").className = "pill" + (transmitting ? " on" : "");
@@ -559,16 +616,51 @@ async function refresh() {
     ? `Transmitting (${s.station}, ${(s.carrier_hz/1000)} kHz)`
     : "Idle";
   $("st-state").textContent = state;
+  const t = s.transmitted || {};
+  $("st-settime").textContent = t.time
+    ? `${t.weekday} ${t.date} ${t.time} (${t.basis}${t.zone_offset_min ? ", offset "+t.zone_offset_min+" min" : ""})`
+    : "—";
+  $("st-dst").textContent = t.dst_text || "—";
   $("st-next").textContent = s.next_scheduled || (s.schedule_enabled ? "—" : "disabled");
   $("st-last").textContent = s.last_run ? `${fmtTime(s.last_run.at)} → ${s.last_run.result} (${s.last_run.duration}m)` : "—";
   $("st-time").textContent = fmtTime(s.system_time);
   $("st-ntp").textContent = s.ntp_synchronized===null ? "unknown" : (s.ntp_synchronized ? "✔ synced" : "✘ not synced");
   $("st-temp").textContent = s.cpu_temp_c===null ? "n/a" : (s.cpu_temp_c + " °C");
+  // Schedule summary line.
+  const times = (s.schedule_times||[]).join(", ") || "none set";
+  $("sched-summary").innerHTML = s.schedule_enabled
+    ? `<b style="color:var(--ok)">Enabled</b> — broadcasting at <b>${times}</b>.`
+      + (s.next_scheduled ? ` Next run: <b>${s.next_scheduled}</b>.` : "")
+    : `<b style="color:var(--warn)">Disabled</b> — no automatic broadcasts (saved times: ${times}).`;
   // Keep the preview button out of the RT window.
   $("preview-btn").disabled = transmitting;
   $("preview-note").textContent = transmitting ? "disabled while transmitting" : "";
   // Back off polling during a broadcast.
   scheduleNextPoll(transmitting ? 10000 : 4000);
+}
+
+function calcDrift(){
+  const v = $("watch-time").value, out = $("drift-out");
+  if (!v){ out.textContent = "Enter the time your watch shows."; return; }
+  const s = window.lastStatus;
+  if (!s || !s.system_time){ out.textContent = "No status yet — try again in a moment."; return; }
+  const now = new Date(s.system_time);
+  const [wh, wm] = v.split(":").map(Number);
+  let diff = (wh*60+wm) - (now.getHours()*60 + now.getMinutes());   // minutes: watch - real
+  if (diff > 720) diff -= 1440;
+  if (diff < -720) diff += 1440;
+  const mag = Math.abs(diff);
+  if (mag <= 1){
+    out.innerHTML = `<span style="color:var(--ok)">Your watch is accurate</span> — within 1 min of the Pi.`;
+    return;
+  }
+  const dir = diff > 0 ? "fast" : "slow";
+  let real = (((120 - diff) % 1440) + 1440) % 1440;   // watch 02:00 happens at real (02:00 - drift)
+  const hh = String(Math.floor(real/60)).padStart(2,"0"), mm = String(real%60).padStart(2,"0");
+  out.innerHTML = `Your watch is <b>${mag} min ${dir}</b> versus the Pi. `
+    + `If it checks at its own 02:00, that is about real time <b>${hh}:${mm}</b>. `
+    + `Tip: press <b>Start</b> (Transmit now) to sync it immediately if your watch has a manual-receive, `
+    + `or it will resync at the next scheduled window once it drifts within range.`;
 }
 function scheduleNextPoll(ms){ clearTimeout(pollTimer); pollTimer = setTimeout(refresh, ms); }
 

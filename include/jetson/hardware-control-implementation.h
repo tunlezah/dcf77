@@ -36,7 +36,8 @@ class HardwareControl::Implementation {
   std::unique_ptr<GPIO::PWM> pwm;
 
  public:
-  bool Init() {
+  bool Init(bool allow_unsupported = false) {
+    (void)allow_unsupported;  // Jetson does its own model capability check below.
     if (isInitialized)
       return carrierPin > 0;
 

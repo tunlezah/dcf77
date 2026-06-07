@@ -182,6 +182,7 @@ Options:
         -z <minutes>          : Transmit the time offset from local (default: 0 minutes)
         -v                    : Verbose.
         -n                    : Dryrun, only showing modulation envelope.
+        -f                    : Force run on unsupported hardware (e.g. Pi 4); carrier may be wrong.
         -h                    : This help.
 ```
 
@@ -279,13 +280,29 @@ This installs:
 - **`txtempus-control.sh`** — the small privileged shim the web UI calls to
   drive systemd.
 
-Then open `http://<your-pi>:8080/` to pick the **station / region**, transmit on
-demand, edit the schedule, and see live status (transmitting?, NTP sync, CPU
-temperature). The web UI targets a trusted LAN on a Pi Zero W: Python-stdlib
-only (no extra packages), ~0 % idle CPU, and it never transmits itself — it only
-writes the config and asks systemd to (re)start the binary, staying out of the
-real-time transmit window. See [`web.md`](web.md) for the full design and
+Then open `http://<your-pi>:8080/` to:
+
+- pick the **station / region** (DCF77/WWVB/MSF/JJY40/JJY60),
+- **transmit on demand** (start/stop) or **edit the nightly schedule** (you see
+  the active times and the next run, so you know exactly when it will broadcast),
+- see **what time the watch will be set to** and the **DST signal** being sent
+  (e.g. CET/CEST for DCF77, GMT/BST for MSF; JJY/JST has no DST),
+- use the **watch-sync helper**: enter what your watch currently shows and it
+  tells you how far it has drifted (so you can tell whether its "2 AM" check is
+  really 2 AM), and
+- watch live status (transmitting?, NTP sync, CPU temperature).
+
+The web UI targets a trusted LAN on a Pi Zero W: Python-stdlib only (no extra
+packages), ~0 % idle CPU, and it never transmits itself — it only writes the
+config and asks systemd to (re)start the binary, staying out of the real-time
+transmit window. See [`web.md`](web.md) for the full design and
 [`summary.md`](summary.md)/[`todo.md`](todo.md) for the project analysis.
+
+**Upgrading / uninstalling.** `deploy/install.sh` is safe to re-run: it stops a
+running install, replaces the files, migrates an existing schedule, and warns
+about any leftover txtempus **cron** entries (pass `--purge-cron` to remove
+them). To remove everything, run `sudo ./deploy/uninstall.sh` (add `--purge` to
+also delete `/etc/txtempus.conf`).
 
 #### Watch holder
 Each set-up will be different. In my case, I need my DCF77 radio
