@@ -327,8 +327,12 @@ One static HTML page, vanilla JS polling `/api/status`. No framework, no build.
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
-Polling interval ~3–5 s for the status block; **stop polling / no preview while
-`transmitting` is true** to keep the core free (§6).
+Status updates are **low-power and adaptive** (§6): the browser ticks the clock
+and any countdown *locally* every second from a server-supplied epoch, and only
+fetches `/api/status` occasionally — **~60 s when idle, ~15 s while transmitting**
+— pausing entirely while the tab is hidden and resuming on focus. The server
+caches the (subprocess-heavy) status for a couple of seconds so bursts or several
+open tabs don't multiply the load. Preview is still disabled while transmitting.
 
 ---
 
@@ -361,9 +365,11 @@ Polling interval ~3–5 s for the status block; **stop polling / no preview whil
    with a short socket timeout so a hung browser can't pile up work; cap
    concurrent handlers. Even so, these threads are normal-priority and yield to
    the transmitter.
-5. **Cheap status during TX:** when `transmitting` is true the UI backs off
-   polling (e.g. every 10 s instead of 3 s) and disables preview — so a left-open
-   tab can't nibble the core mid-broadcast.
+5. **Cheap status during TX:** the UI ticks its clock/countdowns locally and
+   polls `/api/status` only ~every 15 s while transmitting (~60 s idle), pauses
+   polling on a hidden tab, and disables preview — so a left-open tab can't
+   nibble the core mid-broadcast. The server also caches status for a couple of
+   seconds, bounding the subprocess cost no matter how many clients poll.
 
 Net effect: during the short, infrequent nightly windows the web layer is
 near-silent; outside them it's a tiny idle process.
