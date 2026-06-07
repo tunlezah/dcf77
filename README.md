@@ -184,16 +184,18 @@ timing may be less accurate.
 
 ## Appliance: config, scheduler & install
 
-For a set-and-forget device, install the appliance layer:
+For a set-and-forget device, install the appliance layer with a single command:
 
 ```sh
-sudo make install            # the binary, if you haven't already
 sudo ./deploy/install.sh
 ```
 
 `install.sh` is **idempotent / upgrade-safe**: run from anywhere, it stops a
 running install, installs the files below, migrates an existing schedule, and
 warns about leftover txtempus **cron** entries (`--purge-cron` removes them). It
+also **ensures the `/usr/bin/txtempus` binary is present** — using an existing
+copy, a prebuilt `build/txtempus`, or building it for you when `cmake`/`make` are
+available (so the separate `sudo make install` is optional). It
 installs:
 
 - **`/etc/txtempus.conf`** — the single source of truth (station, run duration,

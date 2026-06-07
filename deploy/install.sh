@@ -11,8 +11,9 @@
 #   sudo ./deploy/install.sh                 # install or upgrade
 #   sudo ./deploy/install.sh --purge-cron    # also remove old txtempus cron lines
 #
-# Assumes the binary is already built+installed (`cd build && cmake .. && make &&
-# sudo make install` -> /usr/bin/txtempus). A warning is printed if it is not.
+# Ensures the transmitter binary is in place too: it uses an already-installed
+# /usr/bin/txtempus, else a prebuilt build/txtempus, else builds it when cmake/make
+# are available. So a single `install.sh` is enough; no separate `make install`.
 
 set -euo pipefail
 
@@ -103,6 +104,35 @@ else
     install -m 0644 "$REPO_DIR/web/watches.json" "$WATCHES_DST"
 fi
 
+# --- 1b. Transmitter binary ---------------------------------------------------
+# The appliance is useless without /usr/bin/txtempus -- the oneshot/scheduler
+# units and the scheduler script all exec it from there. Install it here so a
+# single install.sh suffices: prefer an existing copy, then a prebuilt
+# build/txtempus, then build it when a toolchain is present.
+BIN_OK=1
+BUILD_DIR="$REPO_DIR/build"
+if [[ -x /usr/bin/txtempus ]]; then
+    echo "Transmitter binary present: /usr/bin/txtempus"
+elif [[ -x "$BUILD_DIR/txtempus" ]]; then
+    echo "Installing prebuilt binary $BUILD_DIR/txtempus -> /usr/bin/txtempus"
+    install -m 0755 "$BUILD_DIR/txtempus" /usr/bin/txtempus
+elif command -v cmake >/dev/null 2>&1 && command -v make >/dev/null 2>&1; then
+    echo "No /usr/bin/txtempus found -- building it (this can take a minute)..."
+    if cmake -S "$REPO_DIR" -B "$BUILD_DIR" >/dev/null 2>&1 \
+       && cmake --build "$BUILD_DIR" -j"$(nproc 2>/dev/null || echo 1)" >/dev/null 2>&1; then
+        install -m 0755 "$BUILD_DIR/txtempus" /usr/bin/txtempus
+        echo "Built and installed: /usr/bin/txtempus"
+    else
+        BIN_OK=0
+        echo "WARNING: build failed. Build it by hand and re-run:"
+        echo "         cmake -S $REPO_DIR -B $BUILD_DIR && cmake --build $BUILD_DIR"
+    fi
+else
+    BIN_OK=0
+    echo "WARNING: /usr/bin/txtempus is missing and there is no cmake/make to build it."
+    echo "         sudo apt-get install -y build-essential cmake   # then re-run this installer"
+fi
+
 # --- 2. Helper scripts --------------------------------------------------------
 echo "Installing helper scripts to $BIN_DIR"
 install -m 0755 "$SCRIPT_DIR/txtempus-scheduler.sh" "$BIN_DIR/txtempus-scheduler.sh"
@@ -173,8 +203,12 @@ fi
 # --- 8. Sanity check + summary ------------------------------------------------
 if [[ ! -x /usr/bin/txtempus ]]; then
     echo
-    echo "NOTE: /usr/bin/txtempus not found. Build & install the binary:"
-    echo "      cd $REPO_DIR && mkdir -p build && cd build && cmake .. && make && sudo make install"
+    echo "WARNING: /usr/bin/txtempus is still missing. The web UI will run, but"
+    echo "         transmits will fail in the logs with"
+    echo "         'error spawning txtempus: No such file or directory'."
+    echo "         Provide the binary, then re-run this installer:"
+    echo "         cd $REPO_DIR && cmake -S . -B build && cmake --build build"
+    echo "         sudo install -m 0755 build/txtempus /usr/bin/txtempus"
 fi
 
 WEB_PORT_SHOW="$(. "$CONF_DST" 2>/dev/null; echo "${WEB_PORT:-8080}")"
